@@ -5,7 +5,7 @@
 //            外来 JS 弱推断、不进语义检查，避免包内源码与本项目 tsconfig 相互干扰。
 //   stage 2: esbuild —— bundle 成自包含 ESM 单文件（gui/std/os/ffi 等为运行时模块，external）
 //   stage 3: embed —— brotli 压缩后追加进 exe 尾部（[exe][js][u32 len]["QWBR"]，同主仓 scripts/embed-js.mjs 格式）
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { brotliCompressSync, constants as zc } from 'node:zlib'
 import { build } from 'esbuild'
@@ -70,6 +70,7 @@ const js = await build({
     write: false,
 })
 const jsBytes = js.outputFiles![0].contents
+mkdirSync('dist', { recursive: true })   // dist/ 不入库，干净 checkout 里不存在
 writeFileSync('dist/deskmon.js', jsBytes)
 
 // ── stage 3: brotli + embed ──

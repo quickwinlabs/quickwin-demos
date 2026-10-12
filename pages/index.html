@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quickwin demos</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 760px; margin: 0 auto; padding: 48px 20px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.6em; margin: 0 0 4px; }
+  .sub { color: #666; margin: 0 0 32px; }
+  .card {
+    border: 1px solid rgba(127,127,127,.35); border-radius: 10px;
+    padding: 20px 24px; margin-bottom: 24px;
+  }
+  .card h2 { font-size: 1.15em; margin: 0 0 8px; }
+  .shots { margin: 12px 0; }
+  .shots img { display: block; width: 100%; max-width: 692px; border-radius: 6px; margin: 6px 0; }
+  .meta { color: #666; font-size: .85em; margin: 8px 0 16px; }
+  .meta code { font-size: 1em; }
+  .dl {
+    display: inline-block; padding: 9px 22px; border-radius: 8px;
+    background: #2da44e; color: #fff; text-decoration: none; font-weight: 600;
+  }
+  .dl:hover { background: #2c974b; }
+  footer { color: #888; font-size: .8em; margin-top: 40px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+  <h1>quickwin demos</h1>
+  <p class="sub">Single-exe desktop utilities built with <a href="https://github.com/xna00/quickwin">quickwin</a> — TypeScript in, one .exe out.</p>
+
+  <div class="card">
+    <h2>deskmon</h2>
+    <p>Always-on-top desktop gadget: network speed, memory and CPU usage, refreshed every second. Drag anywhere on the window; right-click the tray icon to toggle topmost or exit. Closing the window just hides it to the tray.</p>
+    <div class="shots">
+      <img src="deskmon-xp.png" alt="deskmon running on Windows XP" loading="lazy">
+      <img src="deskmon-win7.png" alt="deskmon running on Windows 7" loading="lazy">
+    </div>
+    <p class="meta">1.2 MB &middot; single file &middot; no install &middot; Windows XP+ (32-bit) &middot; verified on XP &amp; Windows 7</p>
+    <a class="dl" href="deskmon.exe" download>Download deskmon.exe</a>
+  </div>
+
+  <footer>Built by <code>npm run build</code> (tsc + esbuild + brotli embed) on every push — <a href="https://github.com/xna00/quickwin-demos">source on GitHub</a>.</footer>
+</body>
+</html>
