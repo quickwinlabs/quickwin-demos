@@ -19,6 +19,10 @@
     display: block; transition: background .15s;
   }
   .card:hover { background: rgba(127,127,127,.05); }
+  .card .thumb {
+    display: block; width: 100%; max-width: 692px;
+    border-radius: 6px; margin: 4px 0 12px; border: 1px solid rgba(127,127,127,.2);
+  }
   .card h2 { font-size: 1.15em; margin: 0 0 6px; }
   .card p { margin: 0 0 8px; color: #333; }
   .meta { color: #666; font-size: .85em; margin: 8px 0 0; }
@@ -37,6 +41,7 @@
 
   <a class="card" href="deskmon/">
     <span class="arrow">&rarr;</span>
+    <img class="thumb" src="deskmon/screenshots/win11.png" alt="deskmon 预览" loading="lazy">
     <h2>deskmon（桌面监控悬浮窗）</h2>
     <p>常驻桌面的细条：网速、内存、CPU 使用率，1 秒刷新，半透明圆角样式。</p>
     <p class="meta">
