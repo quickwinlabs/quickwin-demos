@@ -1,0 +1,16 @@
+{
+  "name": "quickwin-demos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desktop utilities built with quickwin",
+  "type": "module",
+  "scripts": {
+    "build": "node build.ts"
+  },
+  "dependencies": {
+    "quickwin": "^2.1.1"
+  },
+  "devDependencies": {
+    "typescript": "5.9"
+  }
+}

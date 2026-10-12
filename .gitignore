@@ -1,0 +1,3 @@
+node_modules/
+.tsc-out/
+log_*.txt
