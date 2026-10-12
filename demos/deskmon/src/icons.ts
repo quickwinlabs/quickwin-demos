@@ -1,6 +1,13 @@
 // deskmon 字段图标：网络云形 / 内存条 / CPU 芯片（16×16，原色 #BEBEBE）
-// 来源：Vitals GNOME 扩展 icons/original — https://github.com/corecoding/Vitals
-// 许可：GPL-3.0（图标按原项目许可分发，出处见上）
+// 来源：Vitals GNOME Shell 扩展（corecoding/Vitals）—— icons/original/ 三个 symbolic SVG
+//   cloud.svg    → 网络
+//   memory.svg   → 内存（图标形似内存条）
+//   cpu.svg      → CPU
+// 仓库：https://github.com/corecoding/Vitals
+// 图标目录：https://github.com/corecoding/Vitals/tree/main/icons/original
+// 许可：GPL-3.0-or-later（原项目顶层 LICENSE；图标未另声明，按项目默认）
+//   https://github.com/corecoding/Vitals/blob/main/LICENSE
+// 本 exe 内嵌原图转换后的位图，属"衍生作品"；如再分发应附 GPL-3.0 声明与源码获取路径。
 // 处理链：SVG → ImageMagick 16×16 PNG → 手拼 32bpp BMP-ico（XP 兼容；
 //   PIL 默认输出的 PNG-in-ICO 是 Vista+ 格式，XP 的 user32 不识别）
 // 运行时：CreateIconFromResourceEx 跳过 6B ICONDIR 取 RT_ICON 段内存成像，免外置文件

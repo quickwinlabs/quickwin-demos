@@ -1,51 +1,51 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>quickwin demos</title>
+<title>quickwin 示例集合</title>
 <style>
   :root { color-scheme: light dark; }
   body {
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     max-width: 760px; margin: 0 auto; padding: 48px 20px;
-    line-height: 1.5;
+    line-height: 1.7;
   }
   h1 { font-size: 1.6em; margin: 0 0 4px; }
   .sub { color: #666; margin: 0 0 32px; }
   .card {
     border: 1px solid rgba(127,127,127,.35); border-radius: 10px;
-    padding: 20px 24px; margin-bottom: 24px;
+    padding: 20px 24px; margin-bottom: 24px; text-decoration: none; color: inherit;
+    display: block; transition: background .15s;
   }
-  .card h2 { font-size: 1.15em; margin: 0 0 8px; }
-  .shots { margin: 12px 0; }
-  .shots img { display: block; width: 100%; max-width: 692px; border-radius: 6px; margin: 6px 0; }
-  .meta { color: #666; font-size: .85em; margin: 8px 0 16px; }
+  .card:hover { background: rgba(127,127,127,.05); }
+  .card h2 { font-size: 1.15em; margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; color: #333; }
+  .meta { color: #666; font-size: .85em; margin: 8px 0 0; }
   .meta code { font-size: 1em; }
-  .dl {
-    display: inline-block; padding: 9px 22px; border-radius: 8px;
-    background: #2da44e; color: #fff; text-decoration: none; font-weight: 600;
-  }
-  .dl:hover { background: #2c974b; }
+  .arrow { color: #0969da; font-size: .9em; float: right; }
   footer { color: #888; font-size: .8em; margin-top: 40px; }
   footer a { color: inherit; }
 </style>
 </head>
 <body>
-  <h1>quickwin demos</h1>
-  <p class="sub">Single-exe desktop utilities built with <a href="https://github.com/xna00/quickwin">quickwin</a> — TypeScript in, one .exe out.</p>
+  <h1>quickwin 示例集合</h1>
+  <p class="sub">
+    基于 <a href="https://github.com/xna00/quickwin">quickwin</a> 的桌面实用工具，
+    TypeScript 写、一个 .exe 交。
+  </p>
 
-  <div class="card">
-    <h2>deskmon</h2>
-    <p>Always-on-top desktop gadget: network speed, memory and CPU usage, refreshed every second. Drag anywhere on the window; right-click the tray icon to toggle topmost or exit. Closing the window just hides it to the tray.</p>
-    <div class="shots">
-      <img src="deskmon-xp.png" alt="deskmon running on Windows XP" loading="lazy">
-      <img src="deskmon-win7.png" alt="deskmon running on Windows 7" loading="lazy">
-    </div>
-    <p class="meta">1.2 MB &middot; single file &middot; no install &middot; Windows XP+ (32-bit) &middot; verified on XP &amp; Windows 7</p>
-    <a class="dl" href="deskmon.exe" download>Download deskmon.exe</a>
-  </div>
+  <a class="card" href="deskmon/">
+    <span class="arrow">&rarr;</span>
+    <h2>deskmon（桌面监控悬浮窗）</h2>
+    <p>常驻桌面的细条：网速、内存、CPU 使用率，1 秒刷新，半透明圆角样式。</p>
+    <p class="meta">
+      1.2 MB &middot; 单文件 &middot; 免安装
+      &middot; Windows XP+ (32 位)
+      &middot; 已在 XP / Windows 7 / Windows 11 验证
+    </p>
+  </a>
 
-  <footer>Built by <code>npm run build</code> (tsc + esbuild + brotli embed) on every push — <a href="https://github.com/xna00/quickwin-demos">source on GitHub</a>.</footer>
+  <footer>每次 push 由 <code>npm run build</code>（tsc + esbuild + brotli embed）自动构建 &mdash; <a href="https://github.com/xna00/quickwin-demos">源码在 GitHub</a>。</footer>
 </body>
 </html>

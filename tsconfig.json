@@ -8,10 +8,10 @@
     "skipLibCheck": true,
     "types": [],
     "outDir": ".tsc-out",
-    "rootDir": "src"
+    "rootDir": "demos"
   },
   "include": [
-    "src",
+    "demos",
     "node_modules/quickwin/quickwin.d.ts"
   ]
 }

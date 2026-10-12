@@ -23,27 +23,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build (tsc + esbuild + brotli embed)
+      - name: Build (tsc + esbuild + brotli embed, multi-demo)
         run: npm run build
 
-      - name: Upload exe artifact
+      - name: Upload exe artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: deskmon
-          path: |
-            dist/deskmon.exe
-            dist/deskmon.js
-
-      - name: Assemble GitHub Pages
-        run: |
-          mkdir -p _pages
-          cp dist/deskmon.exe _pages/
-          cp -r pages/. _pages/
+          name: demo-exes
+          path: dist/*.exe
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: _pages
+          path: dist-pages
 
   deploy-pages:
     # 仅 main 的 push 发布；PR 只构建验证
