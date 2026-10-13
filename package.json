@@ -8,7 +8,7 @@
     "build": "node build.ts"
   },
   "dependencies": {
-    "quickwin": "^2.1.1"
+    "quickwin": "^2.2.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
