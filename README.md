@@ -1,8 +1,8 @@
 # quickwin-demos
 
-基于 [quickwin](https://github.com/xna00/quickwin) 的桌面实用工具合集 —— TypeScript 写、
+基于 [quickwin](https://github.com/quickwinlabs/quickwin) 的桌面实用工具合集 —— TypeScript 写、
 一个 `.exe` 交。每次 push 由 GitHub Actions 构建单文件 exe 并部署
-[GitHub Pages](https://xna00.github.io/quickwin-demos/) 下载页。
+[GitHub Pages](https://quickwinlabs.github.io/quickwin-demos/) 下载页。
 
 ## 目录结构
 
@@ -61,6 +61,6 @@ npm run build
 
 ## 许可
 
-各 demo 源码遵循 quickwin 主仓许可（见 <https://github.com/xna00/quickwin/blob/main/LICENSE>）。
+各 demo 源码遵循 quickwin 主仓许可（见 <https://github.com/quickwinlabs/quickwin/blob/main/LICENSE>）。
 个别 demo 可能引入第三方资源（如 deskmon 的 Vitals 图标，GPL-3.0），
 以各 demo 目录内的注释和页面声明为准。
