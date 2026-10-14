@@ -236,7 +236,8 @@ function applyScale(s: number, persist = false) {
     font = f
     if (hwndMain) {
         // SWP_NOMOVE(0x2)|SWP_NOZORDER(0x4)：原地改尺寸；region 圆角随之重建
-        const r1 = gui.SetWindowPos(hwndMain, 0, 0, 0, 0, MON_W, MON_H, 0x0002 | 0x0004)
+        // 注意 SetWindowPos 是 7 参 (hwnd, insertAfter, x, y, cx, cy, flags)，多传会整体错位
+        const r1 = gui.SetWindowPos(hwndMain, 0, 0, 0, MON_W, MON_H, 0x0002 | 0x0004)
         const r2 = SetWindowRgn(hwndMain, CreateRoundRectRgn(0, 0, MON_W, MON_H, RGN_RADIUS, RGN_RADIUS), 1)
         gui.InvalidateRect(hwndMain, null, false)
         log('  new=' + MON_W + 'x' + MON_H + ' swp=' + r1 + ' rgn=' + r2 +
