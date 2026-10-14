@@ -1,6 +1,8 @@
 // deskmon —— quickwin 桌面资源监控悬浮窗
 //
-// 常驻桌面细条：网速 / 内存 / CPU，1s 刷新；托盘右键菜单支持置顶切换与退出；
+// 常驻桌面细条：网速 / 内存 / CPU，1s 刷新；托盘右键菜单支持置顶切换、大小档与退出；
+// 大小档 = 整窗倍率缩放（尺寸/圆角/间距/字体/图标一起乘），默认跟随系统 DPI
+// （GetDeviceCaps/96 就近取档），切换后写 %TEMP%/deskmon.json（缺失/损坏静默回默认）。
 // 整窗 WM_NCHITTEST→HTCAPTION 全区可拖。半透明背景：WS_EX_LAYERED + LWA_ALPHA
 // （XP 软件混合 / win7+ DWM，桌面壁纸透出）。文字由父窗 WM_PAINT 自绘而非 STATIC
 // 子控件——Win8 起才支持 layered 子窗口合成，Win8 前 child 不参与（MSDN）。
@@ -15,11 +17,12 @@
 //   - gui/std/os/ffi 为运行时模块，bundle 保留 ESM import（format=esm）
 import * as gui from 'gui'
 import * as os from 'os'
+import * as std from 'std'
 import { bind } from 'quickwin/lib/ffi/bind.js'
 import { struct } from 'quickwin/lib/ffi/struct.js'
 import { PtrArrayBuffer } from 'quickwin/lib/ffi/ctype.js'
-import { SystemParametersInfo, BeginPaint, EndPaint, DrawText } from 'quickwin/lib/windows/user32.js'
-import { CreateSolidBrush, SetBkMode, SetTextColor, SelectObject, CreateFontIndirect, GetTextExtentPoint32 } from 'quickwin/lib/windows/gdi32.js'
+import { SystemParametersInfo, BeginPaint, EndPaint, DrawText, GetDC, ReleaseDC } from 'quickwin/lib/windows/user32.js'
+import { CreateSolidBrush, SetBkMode, SetTextColor, SelectObject, CreateFontIndirect, GetTextExtentPoint32, GetDeviceCaps, DeleteObject } from 'quickwin/lib/windows/gdi32.js'
 import { RECT, PAINTSTRUCT, LOGFONTW, SIZE } from 'quickwin/lib/windows/structs.js'
 import { ICON_NET_B64, ICON_MEM_B64, ICON_CPU_B64 } from './icons.js'
 
@@ -45,18 +48,26 @@ const ALPHA = 130               // 不透明度 0-255（≈51%：更强挂件感
 const COLOR_BG = 0x00101010     // 底色（COLORREF 0x00BBGGFF 近黑）：整窗按 alpha 混合到桌面
 const COLOR_BORDER = 0x00555555 // 1px 描边：比底色亮一档的内敛挂件感
 const COLOR_WHITE = 0x00FFFFFF
-const RGN_RADIUS = 8            // 圆角椭圆参数（region/RoundRect 同语义，视觉半径≈4px；28 高过圆显幼稚）
 const DT_FLAGS = 0x00000824     // DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX；DT_VCENTER 无 SINGLELINE 时被 MS 忽略→顶对齐
 const SPI_GETWORKAREA = 0x0030  // 工作区（不含任务栏）——悬浮窗贴任务栏上沿
 const IF_TYPE_SOFTWARE_LOOPBACK = 24   // 注意：6 = IF_TYPE_ETHERNET_CSMACD（以太网），别搞混
 const NET_RESET_BPS = 5e8       // 聚合增量换算 > 500MB/s：计数器重置/网卡重枚举，按 0 处理
 const TICK_MS = 1000
-const MON_W = 185               // 悬浮窗尺寸：三段紧凑（水平居中，段间隙 8px，icon→text 4px）
-const SEG_GAP = 8               // 段与段之间空隙（无竖线，仅靠呼吸空隙）
-const ICON_TEXT_GAP = 4         // icon 与其后文本的紧凑空隙
-const MON_H = 24
+// ── 大小档：BASE_* 为 100% 基准，MON_* 等由 applyScale 按档位派生 ──
+const SCALES = [1, 1.25, 1.5, 2]    // 托盘菜单档位（配置文件只认这四个值）
+const BASE_W = 185                  // 悬浮窗基准尺寸：三段紧凑（水平居中，段间隙 8px，icon→text 4px）
+const BASE_H = 24
+const BASE_GAP = 8                  // 段与段之间空隙（无竖线，仅靠呼吸空隙）
+const BASE_ITG = 4                  // icon 与其后文本的紧凑空隙
+const BASE_RADIUS = 8               // 圆角椭圆参数（region/RoundRect 同语义，28 高过圆显幼稚）
+const BASE_ICON = 16                // 图标基准（源 ico 16×16，绘制时 DrawIconEx 按档拉伸）
+const BASE_FONT_H = 12              // Tahoma 字符高 px（lfHeight 负值语义；数字渲染比默认宋体清晰）
+let scale = 1                       // 当前档（启动：配置 > 系统 DPI 就近取档）
+let MON_W = BASE_W, MON_H = BASE_H, SEG_GAP = BASE_GAP, ICON_TEXT_GAP = BASE_ITG
+let RGN_RADIUS = BASE_RADIUS, ICON_SIZE = BASE_ICON
 const MENU_EXIT = 1
 const MENU_TOPMOST = 2
+const MENU_SCALE_BASE = 10          // 大小子菜单 id 基址：10..13 ↔ SCALES 各档
 const MAX_IF = 64               // 接口数上限：MIB_IFTABLE 缓冲按 64 行预分配
 // MIB_IFROW（实测行距 860B = MSDN sizeof；mingw 头的 852 少 8B 尾部 padding）——
 //   首行偏移：dwIndex@512 dwType@516 dwMtu@520 dwSpeed@524
@@ -102,7 +113,7 @@ const CreateIconFromResourceEx = bind('user32.dll', 'CreateIconFromResourceEx', 
 const DrawIconEx = bind('user32.dll', 'DrawIconEx', '<>ptr i32 i32 <>ptr i32 i32 u32 <>ptr u32 -> i32')
 
 // ── 字段图标：base64 → RT_ICON（ico 跳 6B ICONDIR）→ 内存成像，免外置文件 ──
-const ICON_SIZE = 16
+const SRC_ICON = 16                // 源 ico 固定 16×16（成像尺寸）；绘制放大走 DrawIconEx 拉伸
 const B64T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 function b64bytes(s: string): Uint8Array {
     const out = new Uint8Array((s.length * 3) >> 2)
@@ -122,7 +133,7 @@ function makeIcon(b64: string): any {
     new Uint8Array(buf as any).set(bytes)
     // ico 布局 6B ICONDIR + 16B ICONDIRENTRY + DIB；CreateIconFromResourceEx 的
     // presbits 期望 BITMAPINFOHEADER 起（Wine/ReactOS 实现）→ 跳 22；dwVer = 0x00030000
-    return CreateIconFromResourceEx((buf as any).ptr + 22, bytes.length - 22, 1, 0x00030000, ICON_SIZE, ICON_SIZE, 0)
+    return CreateIconFromResourceEx((buf as any).ptr + 22, bytes.length - 22, 1, 0x00030000, SRC_ICON, SRC_ICON, 0)
 }
 const hIconNet = makeIcon(ICON_NET_B64)
 const hIconMem = makeIcon(ICON_MEM_B64)
@@ -201,9 +212,94 @@ function fmtRate(bps: number | null): string {
 let topmost = true
 // 分段自绘文本：[网速值] [内存%] [CPU%]（图标即字段标签，段间空格；tick 更新 → InvalidateRect）
 let segTexts = ['starting…', '', '']
+let font: any = null               // Tahoma（按档 lfHeight），applyScale 重建并删旧
+let hwndMain: any = null           // 建窗前先 applyScale 派生尺寸；窗存在后调档原地改几何
 const paintBuf = PAINTSTRUCT.alloc()     // BeginPaint/EndPaint 出参（消息内复用）
 const bgBrush = CreateSolidBrush(COLOR_BG)
 const borderPen = CreatePen(0, 1, COLOR_BORDER)   // PS_SOLID：1px 描边
+
+// ── 大小档：派生几何/字体 + 持久化（全程静默降级，配置坏了不影响挂件）──
+function applyScale(s: number, persist = false) {
+    scale = s
+    MON_W = Math.round(BASE_W * s)
+    MON_H = Math.round(BASE_H * s)
+    SEG_GAP = Math.round(BASE_GAP * s)
+    ICON_TEXT_GAP = Math.round(BASE_ITG * s)
+    RGN_RADIUS = Math.round(BASE_RADIUS * s)
+    ICON_SIZE = Math.round(BASE_ICON * s)
+    // Tahoma：数字渲染比默认宋体清晰；中文经 GDI 字体链接 fallback
+    const f = CreateFontIndirect({ lfHeight: -Math.round(BASE_FONT_H * s), lfWeight: 400, lfFaceName: 'Tahoma' })
+    if (font) DeleteObject(font)   // 旧字体已随 paint DC 释放、无归属，可删
+    font = f
+    if (hwndMain) {
+        // SWP_NOMOVE(0x2)|SWP_NOZORDER(0x4)：原地改尺寸；region 圆角随之重建
+        gui.SetWindowPos(hwndMain, 0, 0, 0, 0, MON_W, MON_H, 0x0002 | 0x0004)
+        SetWindowRgn(hwndMain, CreateRoundRectRgn(0, 0, MON_W, MON_H, RGN_RADIUS, RGN_RADIUS), 1)
+        gui.InvalidateRect(hwndMain, null, false)
+    }
+    if (persist) saveScale(s)
+}
+/** 系统 DPI（GetDeviceCaps/LOGPIXELSX ÷ 96）就近取档；探测失败（XP/异常）回 1 */
+function defaultScaleByDpi(): number {
+    try {
+        const dc = GetDC(0 as any)       // NULL → 桌面 DC（引擎层 NULL=0 直通）
+        if (dc) {
+            const dpi = GetDeviceCaps(dc, gui.DeviceCap.LOGPIXELSX)
+            ReleaseDC(0 as any, dc)
+            if (dpi > 0) {
+                const want = dpi / 96
+                let best = SCALES[0]
+                for (const s of SCALES) if (Math.abs(s - want) < Math.abs(best - want)) best = s
+                return best
+            }
+        }
+    } catch (e) { /* 取不到 → 1 */ }
+    return 1
+}
+function cfgPath(): string | null {
+    const dir = std.getenv('TEMP')   // 注意:os 模块没有 getenv(quickjs-libc 语义,在 std)
+    return dir ? dir.replace(/[\\/]+$/, '') + '\\deskmon.json' : null
+}
+/** 读档位；缺失/损坏/非档位值 → null（调用方回默认） */
+function loadScale(): number | null {
+    try {
+        const p = cfgPath(); if (!p) return null
+        const fd = os.open(p, os.O_RDONLY)
+        if (fd === null || fd < 0) return null
+        const buf = new ArrayBuffer(256)
+        const n = os.read(fd, buf, 0, 256)
+        os.close(fd)
+        if (n <= 0) return null
+        const u8 = new Uint8Array(buf)
+        // 文本解码:兼容 UTF-16LE(带 BOM;cmd `echo` 落盘是无 BOM 宽字符,按偶数位 ASCII 判)
+        // 与 UTF-8 BOM(记事本另存形态)。内容本身纯 ASCII,各分支直拷码位即可。
+        let txt = ''
+        if (n >= 2 && u8[0] === 0xff && u8[1] === 0xfe) {          // UTF-16LE + BOM
+            for (let i = 2; i + 1 < n; i += 2) txt += String.fromCharCode(u8[i] | (u8[i + 1] << 8))
+        } else if (n >= 2 && u8[1] === 0) {                         // UTF-16LE 无 BOM
+            for (let i = 0; i + 1 < n; i += 2) txt += String.fromCharCode(u8[i] | (u8[i + 1] << 8))
+        } else {                                                    // UTF-8 / ANSI
+            for (let i = u8[0] === 0xef && u8[1] === 0xbb && u8[2] === 0xbf ? 3 : 0; i < n; i++)
+                txt += String.fromCharCode(u8[i])
+        }
+        const v = JSON.parse(txt).scale
+        return (typeof v === 'number' && SCALES.indexOf(v) >= 0) ? v : null
+    } catch (e) { return null }
+}
+/** 写 {scale:…}；任何失败静默（挂件不因配置起不来） */
+function saveScale(s: number) {
+    try {
+        const p = cfgPath(); if (!p) return
+        const fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        if (fd === null || fd < 0) return
+        const txt = JSON.stringify({ scale: s })
+        const buf = new ArrayBuffer(txt.length)
+        const u8 = new Uint8Array(buf)
+        for (let i = 0; i < txt.length; i++) u8[i] = txt.charCodeAt(i)
+        os.write(fd, buf, 0, txt.length)
+        os.close(fd)
+    } catch (e) { /* 静默 */ }
+}
 
 gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number) => {
     if (!hwnd) return gui.DefWindowProc(hwnd, msg, _w, lParam)
@@ -267,6 +363,14 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
             const menu = gui.CreatePopupMenu()
             gui.AppendMenu(menu, 0, MENU_TOPMOST, topmost ? '取消置顶(&T)' : '窗口置顶(&T)')
             gui.AppendMenu(menu, 0x0800, 0, '')   // MF_SEPARATOR
+            // 大小子菜单：MF_POPUP(0x10)，id 位放子菜单句柄；DestroyMenu(menu) 递归销毁
+            const sub = gui.CreatePopupMenu()
+            for (let i = 0; i < SCALES.length; i++) {
+                gui.AppendMenu(sub, SCALES[i] === scale ? 0x8 : 0,   // MF_CHECKED 标当前档
+                    MENU_SCALE_BASE + i, Math.round(SCALES[i] * 100) + '%')
+            }
+            gui.AppendMenu(menu, 0x10, sub, '大小(&S)')
+            gui.AppendMenu(menu, 0x0800, 0, '')   // MF_SEPARATOR
             gui.AppendMenu(menu, 0, MENU_EXIT, '退出(&X)')
             const cmd = gui.TrackPopupMenu(menu, p ? p[0] : 0, p ? p[1] : 0, undefined, hwnd)
             gui.DestroyMenu(menu)
@@ -277,6 +381,8 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
                 topmost = !topmost
                 // SWP_NOMOVE | SWP_NOSIZE
                 gui.SetWindowPos(hwnd, topmost ? gui.SetWindowPosHwnd.TOPMOST : gui.SetWindowPosHwnd.NOTOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
+            } else if (cmd >= MENU_SCALE_BASE && cmd < MENU_SCALE_BASE + SCALES.length) {
+                applyScale(SCALES[cmd - MENU_SCALE_BASE], true)   // 切档即持久化
             }
         }
         return 0
@@ -288,6 +394,9 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
     return gui.DefWindowProc(hwnd, msg, _w, lParam)
 })
 
+// 大小档：配置（%TEMP%/deskmon.json）> 系统 DPI 就近取档；派生 MON_* 与字体后建窗
+applyScale(loadScale() ?? defaultScaleByDpi())
+
 // 工作区右下角（任务栏上沿）落位
 const wa: any = RECT.alloc()
 SystemParametersInfo(SPI_GETWORKAREA, 0, wa.ptr, 0)
@@ -297,7 +406,7 @@ const initY = (work.bottom || 768) - MON_H - 40   // 默认稍抬高：距任务
 
 // WS_POPUP（不带 VISIBLE）：EX 风格 CreateWindow 不带 → 补位后再显示，
 // 否则任务栏已按普通窗口建好按钮（事后补 TOOLWINDOW 两机实测不刷新）
-const hwndMain = gui.CreateWindow(
+hwndMain = gui.CreateWindow(
     'DeskMon', '',
     gui.WindowStyle.POPUP,
     initX, initY, MON_W, MON_H, null, null)
@@ -311,8 +420,7 @@ SetLayeredWindowAttributes(hwndMain, 0, ALPHA, LWA_ALPHA)
 SetWindowRgn(hwndMain, CreateRoundRectRgn(0, 0, MON_W, MON_H, RGN_RADIUS, RGN_RADIUS), 1)
 gui.ShowWindow(hwndMain, 5)   // SW_SHOW：此刻起任务栏按 TOOLWINDOW 不建按钮
 
-// Tahoma 9pt（-12px）：数字渲染比默认宋体清晰；中文经 GDI 字体链接 fallback
-const font = CreateFontIndirect({ lfHeight: -12, lfWeight: 400, lfFaceName: 'Tahoma' })
+// Tahoma 字体已在 applyScale 创建（按档 lfHeight），此处不再单独建
 
 // 置顶 + 托盘
 gui.SetWindowPos(hwndMain, gui.SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
@@ -343,5 +451,5 @@ function tick() {
     setTimeout(tick, TICK_MS)
 }
 print('deskmon started: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY
-    + ') topmost=' + topmost + ' tick=' + TICK_MS + 'ms')
+    + ') scale=' + scale + ' topmost=' + topmost + ' tick=' + TICK_MS + 'ms')
 setTimeout(tick, TICK_MS)
