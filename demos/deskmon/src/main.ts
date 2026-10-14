@@ -1,6 +1,6 @@
 // deskmon —— quickwin 桌面资源监控悬浮窗
 //
-// 常驻桌面细条：网速 / 内存 / CPU，1s 刷新；托盘右键菜单支持置顶切换、大小档与退出；
+// 常驻桌面细条：网速 / 内存 / CPU，1s 刷新；托盘右键菜单支持置顶切换、大小档、开机自启动与退出；
 // 大小档 = 整窗倍率缩放（尺寸/圆角/间距/字体/图标一起乘），默认跟随系统 DPI
 // （GetDeviceCaps/96 就近取档），切换后写 %TEMP%/deskmon.json（缺失/损坏静默回默认）。
 // 整窗 WM_NCHITTEST→HTCAPTION 全区可拖。半透明背景：WS_EX_LAYERED + LWA_ALPHA
@@ -18,12 +18,14 @@
 import * as gui from 'gui'
 import * as os from 'os'
 import * as std from 'std'
+import { GetModuleFileName } from 'win'   // 引擎高层版：不传参 = 当前进程 exe 完整路径
 import { bind } from 'quickwin/lib/ffi/bind.js'
 import { struct } from 'quickwin/lib/ffi/struct.js'
-import { PtrArrayBuffer } from 'quickwin/lib/ffi/ctype.js'
+import { NULL, PtrArrayBuffer } from 'quickwin/lib/ffi/ctype.js'
 import { SystemParametersInfo, BeginPaint, EndPaint, DrawText, GetDC, ReleaseDC } from 'quickwin/lib/windows/user32.js'
 import { CreateSolidBrush, SetBkMode, SetTextColor, SelectObject, CreateFontIndirect, GetTextExtentPoint32, GetDeviceCaps, DeleteObject } from 'quickwin/lib/windows/gdi32.js'
 import { RECT, PAINTSTRUCT, LOGFONTW, SIZE } from 'quickwin/lib/windows/structs.js'
+import { RegCloseKey, RegCreateKeyEx, RegOpenKeyEx, RegQueryValueEx, RegSetValueEx } from 'quickwin/lib/windows/advapi32.js'
 import { ICON_NET_B64, ICON_MEM_B64, ICON_CPU_B64 } from './icons.js'
 
 // ── setTimeout 桥接：os 事件循环已与 gui 消息泵集成（quickjs-libc 消息泵里 poll 定时器）──
@@ -68,6 +70,7 @@ let RGN_RADIUS = BASE_RADIUS, ICON_SIZE = BASE_ICON
 const MENU_EXIT = 1
 const MENU_TOPMOST = 2
 const MENU_SCALE_BASE = 10          // 大小子菜单 id 基址：10..13 ↔ SCALES 各档
+const MENU_AUTOSTART = 4            // 开机自启动开关（1/2/10..13 已占）
 const MAX_IF = 64               // 接口数上限：MIB_IFTABLE 缓冲按 64 行预分配
 // MIB_IFROW（实测行距 860B = MSDN sizeof；mingw 头的 852 少 8B 尾部 padding）——
 //   首行偏移：dwIndex@512 dwType@516 dwMtu@520 dwSpeed@524
@@ -111,6 +114,8 @@ const RoundRect = bind('gdi32.dll', 'RoundRect', '<>ptr i32 i32 i32 i32 i32 i32 
 // 字段图标：内存字节成像 + 绘制（lib/windows 未封装 → 自 bind）
 const CreateIconFromResourceEx = bind('user32.dll', 'CreateIconFromResourceEx', '<>ptr u32 i32 i32 i32 i32 u32 -> <HICON>ptr')
 const DrawIconEx = bind('user32.dll', 'DrawIconEx', '<>ptr i32 i32 <>ptr i32 i32 u32 <>ptr u32 -> i32')
+// 开机自启动：lib/windows 未封装 RegDeleteValue → 自 bind（只删值，不动 Run 键本体）
+const RegDeleteValue = bind('advapi32.dll', 'RegDeleteValueW', '<>ptr <WCHAR>ptr -> i32')
 
 // ── 字段图标：base64 → RT_ICON（ico 跳 6B ICONDIR）→ 内存成像，免外置文件 ──
 const SRC_ICON = 16                // 源 ico 固定 16×16（成像尺寸）；绘制放大走 DrawIconEx 拉伸
@@ -329,6 +334,68 @@ function saveScale(s: number) {
     } catch (e) { log('saveScale: err ' + e) }
 }
 
+// ── 开机自启动：HKCU Run 键即状态源（启动读一次打勾，切换按返回码决定翻转）；
+//    注册表任何失败静默降级——菜单状态不变，挂件不受影响 ──
+const AUTOSTART_KEY = 'Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+const AUTOSTART_VAL = 'deskmon'
+/** REG_SZ 数据 = UTF-16LE 含结尾 NUL（exe 路径可能含中文）——照 test/test_registry.ts */
+function wbuf(s: string): any {
+    const p = new PtrArrayBuffer((s.length + 1) * 2)
+    const dv = new DataView(p)
+    for (let i = 0; i <= s.length; i++) dv.setUint16(i * 2, s.charCodeAt(i), true)
+    return p
+}
+/** 键句柄出参回读（ia32 4B / x64 8B）——照 test_registry 的 readPtr 先例 */
+function readRegPtr(dv: DataView): number {
+    if (os.arch === 'ia32') return dv.getUint32(0, true)
+    return dv.getUint32(0, true) + dv.getUint32(4, true) * 4294967296
+}
+/** Run 值存在 = 开；键/值缺失、任何异常一律 false（菜单回未勾） */
+function autostartGet(): boolean {
+    let on = false
+    try {
+        const phk = new PtrArrayBuffer(8)
+        const rc = RegOpenKeyEx(gui.HKey.CURRENT_USER, AUTOSTART_KEY, 0, gui.RegAccess.READ, phk)
+        if (rc === 0) {
+            const hkey = readRegPtr(new DataView(phk))
+            // 空探针（lpData=NULL）：值存在即 0，不读数据——test_registry 同款
+            on = RegQueryValueEx(hkey, AUTOSTART_VAL, NULL, NULL, NULL, NULL) === 0
+            RegCloseKey(hkey)
+        }
+        log('autostartGet: openRc=' + rc + ' on=' + on)
+    } catch (e) { log('autostartGet: err ' + e) }
+    return on
+}
+/** 写/删 Run 值；true = 已达目标态（关闭分支 rc=2 = 键/值本就不在，视为达成） */
+function autostartSet(on: boolean): boolean {
+    let rc = -1
+    let path = ''
+    try {
+        let data = ''
+        if (on) {
+            path = GetModuleFileName() ?? ''
+            if (!path) { log('autostartSet: no exe path'); return false }
+            data = '"' + path + '"'   // 引号包裹：Run 键路径含空格必需
+        }
+        const phk = new PtrArrayBuffer(8)
+        rc = on
+            ? RegCreateKeyEx(gui.HKey.CURRENT_USER, AUTOSTART_KEY, 0, NULL, 0,
+                gui.RegAccess.SET_VALUE, NULL, phk, NULL)
+            : RegOpenKeyEx(gui.HKey.CURRENT_USER, AUTOSTART_KEY, 0, gui.RegAccess.SET_VALUE, phk)
+        if (rc === 0) {
+            const hkey = readRegPtr(new DataView(phk))
+            rc = on
+                ? RegSetValueEx(hkey, AUTOSTART_VAL, 0, gui.RegType.SZ,
+                    wbuf(data), (data.length + 1) * 2)
+                : RegDeleteValue(hkey, AUTOSTART_VAL)   // 2 = 值不在（关态已达成）
+            RegCloseKey(hkey)
+        }
+        log('autostartSet: on=' + on + ' rc=' + rc + (on ? ' path=' + path : ''))
+        return rc === 0 || (!on && rc === 2)
+    } catch (e) { log('autostartSet: err ' + e); return false }
+}
+let autostart = autostartGet()   // 菜单打勾状态；外部改了注册表，重启即同步
+
 gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number) => {
     if (!hwnd) return gui.DefWindowProc(hwnd, msg, _w, lParam)
     if (msg === WM_NCHITTEST) return HTCAPTION
@@ -399,11 +466,12 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
                     MENU_SCALE_BASE + i, Math.round(SCALES[i] * 100) + '%')
             }
             gui.AppendMenu(menu, 0x10, sub, '大小(&S)')
+            gui.AppendMenu(menu, autostart ? 0x8 : 0, MENU_AUTOSTART, '开机自启动(&A)')   // MF_CHECKED 按 Run 键实况
             gui.AppendMenu(menu, 0x0800, 0, '')   // MF_SEPARATOR
             gui.AppendMenu(menu, 0, MENU_EXIT, '退出(&X)')
             const cmd = gui.TrackPopupMenu(menu, p ? p[0] : 0, p ? p[1] : 0, undefined, hwnd)
             gui.DestroyMenu(menu)
-            log('menu cmd=' + cmd + ' (EXIT=' + MENU_EXIT + ' TOPMOST=' + MENU_TOPMOST + ' SCALE_BASE=' + MENU_SCALE_BASE + ')')
+            log('menu cmd=' + cmd + ' (EXIT=' + MENU_EXIT + ' TOPMOST=' + MENU_TOPMOST + ' SCALE_BASE=' + MENU_SCALE_BASE + ' AUTOSTART=' + MENU_AUTOSTART + ')')
             if (cmd === MENU_EXIT) {
                 gui.ShellNotifyIcon(gui.NotifyIconCmd.DELETE, { hwnd, uID: 1 } as any)
                 gui.PostQuitMessage(0)
@@ -413,6 +481,9 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
                 gui.SetWindowPos(hwnd, topmost ? gui.SetWindowPosHwnd.TOPMOST : gui.SetWindowPosHwnd.NOTOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
             } else if (cmd >= MENU_SCALE_BASE && cmd < MENU_SCALE_BASE + SCALES.length) {
                 applyScale(SCALES[cmd - MENU_SCALE_BASE], true)   // 切档即持久化
+            } else if (cmd === MENU_AUTOSTART) {
+                const want = !autostart
+                if (autostartSet(want)) autostart = want   // 返回码达成才翻转；失败保持原打勾
             }
         }
         return 0
