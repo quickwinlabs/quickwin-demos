@@ -8,6 +8,10 @@
 //   stage 3: embed —— brotli 压缩后追加进 exe 尾部（[exe][js][u32 len]["QWBR"]，
 //            同主仓 scripts/embed-js.mjs 格式）
 //
+//   stage 3 前可选步骤：若 demos/<name>/icon.ico 存在，用 resedit 给 PE 盖图标
+//   （RT_ICON_GROUP + RT_ICON）。必须在嵌 JS 之前——resedit 重写 PE 不保留尾部数据，
+//    此刻 QWBR 尾块还没加上，顺序天然安全。
+//
 //   同时组装 GitHub Pages：
 //     dist-pages/                       ← _pages 上传根
 //       index.html                      ← 从 pages/index.html 复制
@@ -21,6 +25,7 @@ import { join, basename } from 'node:path'
 import { brotliCompressSync, constants as zc } from 'node:zlib'
 import { build } from 'esbuild'
 import ts from 'typescript'
+import { Data, NtExecutable, NtExecutableResource, Resource } from 'resedit'
 
 // ── 枚举 demos ──
 const DEMOS_DIR = 'demos'
@@ -118,7 +123,24 @@ for (const d of demos) {
     writeFileSync(jsOut, jsBytes)
 
     console.log('[3/3] embed ...')
-    const exe = readFileSync(EXE_SRC)
+    let exe = readFileSync(EXE_SRC)
+    const iconPath = join(DEMOS_DIR, d, 'icon.ico')
+    if (existsSync(iconPath)) {
+        // resedit 盖图标；必须在嵌 JS 前——resedit 重写 PE 不保留尾部数据
+        const plainLen = exe.length
+        const pe = NtExecutable.from(exe)
+        const res = NtExecutableResource.from(pe)
+        const iconFile = Data.IconFile.from(readFileSync(iconPath))
+        Resource.IconGroupEntry.replaceIconsForResource(
+            res.entries,
+            101,       // RT_ICON_GROUP ID（底座无现成图标，资源不存在时自动追加）
+            1033,      // en-US
+            iconFile.icons.map((i) => i.data),
+        )
+        res.outputResource(pe)
+        exe = Buffer.from(pe.generate())
+        console.log(`  icon: ${iconPath} (${iconFile.icons.length} item, +${exe.length - plainLen}B)`)
+    }
     const packed = brotliCompressSync(jsBytes, {
         params: {
             [zc.BROTLI_PARAM_MODE]: zc.BROTLI_MODE_TEXT,
