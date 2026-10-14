@@ -220,6 +220,9 @@ const borderPen = CreatePen(0, 1, COLOR_BORDER)   // PS_SOLID：1px 描边
 
 // ── 大小档：派生几何/字体 + 持久化（全程静默降级，配置坏了不影响挂件）──
 function applyScale(s: number, persist = false) {
+    log('applyScale enter: s=' + s + ' persist=' + persist +
+        ' hwnd=' + (hwndMain ? String(hwndMain) : 'null') +
+        ' old=' + MON_W + 'x' + MON_H + ' scale=' + scale)
     scale = s
     MON_W = Math.round(BASE_W * s)
     MON_H = Math.round(BASE_H * s)
@@ -229,47 +232,68 @@ function applyScale(s: number, persist = false) {
     ICON_SIZE = Math.round(BASE_ICON * s)
     // Tahoma：数字渲染比默认宋体清晰；中文经 GDI 字体链接 fallback
     const f = CreateFontIndirect({ lfHeight: -Math.round(BASE_FONT_H * s), lfWeight: 400, lfFaceName: 'Tahoma' })
-    if (font) DeleteObject(font)   // 旧字体已随 paint DC 释放、无归属，可删
+    log('  font new=' + (f ? 'ok' : 'NULL') + ' delOld=' + (font ? String(DeleteObject(font)) : 'n/a'))   // 旧字体已随 paint DC 释放、无归属，可删
     font = f
     if (hwndMain) {
         // SWP_NOMOVE(0x2)|SWP_NOZORDER(0x4)：原地改尺寸；region 圆角随之重建
-        gui.SetWindowPos(hwndMain, 0, 0, 0, 0, MON_W, MON_H, 0x0002 | 0x0004)
-        SetWindowRgn(hwndMain, CreateRoundRectRgn(0, 0, MON_W, MON_H, RGN_RADIUS, RGN_RADIUS), 1)
+        const r1 = gui.SetWindowPos(hwndMain, 0, 0, 0, 0, MON_W, MON_H, 0x0002 | 0x0004)
+        const r2 = SetWindowRgn(hwndMain, CreateRoundRectRgn(0, 0, MON_W, MON_H, RGN_RADIUS, RGN_RADIUS), 1)
         gui.InvalidateRect(hwndMain, null, false)
+        log('  new=' + MON_W + 'x' + MON_H + ' swp=' + r1 + ' rgn=' + r2 +
+            ' rectNow=' + JSON.stringify(gui.GetWindowRect(hwndMain)))
     }
     if (persist) saveScale(s)
 }
 /** 系统 DPI（GetDeviceCaps/LOGPIXELSX ÷ 96）就近取档；探测失败（XP/异常）回 1 */
 function defaultScaleByDpi(): number {
+    let res = 1
     try {
         const dc = GetDC(0 as any)       // NULL → 桌面 DC（引擎层 NULL=0 直通）
         if (dc) {
             const dpi = GetDeviceCaps(dc, gui.DeviceCap.LOGPIXELSX)
             ReleaseDC(0 as any, dc)
+            log('defaultScaleByDpi: dpi=' + dpi)
             if (dpi > 0) {
                 const want = dpi / 96
                 let best = SCALES[0]
                 for (const s of SCALES) if (Math.abs(s - want) < Math.abs(best - want)) best = s
-                return best
+                res = best
             }
         }
-    } catch (e) { /* 取不到 → 1 */ }
-    return 1
+    } catch (e) { log('defaultScaleByDpi: err ' + e) /* 取不到 → 1 */ }
+    log('defaultScaleByDpi: -> ' + res)
+    return res
 }
 function cfgPath(): string | null {
     const dir = std.getenv('TEMP')   // 注意:os 模块没有 getenv(quickjs-libc 语义,在 std)
     return dir ? dir.replace(/[\\/]+$/, '') + '\\deskmon.json' : null
 }
+// ── 诊断日志:append 写 %TEMP%\deskmon.log(每条一行,unix 时间戳);全程静默 ──
+function log(msg: string) {
+    try {
+        const p = cfgPath(); if (!p) return
+        const fd = os.open(p.replace(/deskmon\.json$/, 'deskmon.log'),
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        if (fd === null || fd < 0) return
+        const txt = (Date.now() / 1000).toFixed(3) + ' ' + msg + '\r\n'
+        const buf = new ArrayBuffer(txt.length)
+        const u8 = new Uint8Array(buf)
+        for (let i = 0; i < txt.length; i++) u8[i] = txt.charCodeAt(i)
+        os.write(fd, buf, 0, txt.length)
+        os.close(fd)
+    } catch (e) { /* 日志失败不影响挂件 */ }
+}
 /** 读档位；缺失/损坏/非档位值 → null（调用方回默认） */
 function loadScale(): number | null {
+    let res: number | null = null
     try {
-        const p = cfgPath(); if (!p) return null
+        const p = cfgPath(); if (!p) { log('loadScale: no TEMP/cfgPath'); return null }
         const fd = os.open(p, os.O_RDONLY)
-        if (fd === null || fd < 0) return null
+        if (fd === null || fd < 0) { log('loadScale: open failed (' + p + ')'); return null }
         const buf = new ArrayBuffer(256)
         const n = os.read(fd, buf, 0, 256)
         os.close(fd)
-        if (n <= 0) return null
+        if (n <= 0) { log('loadScale: empty file'); return null }
         const u8 = new Uint8Array(buf)
         // 文本解码:兼容 UTF-16LE(带 BOM;cmd `echo` 落盘是无 BOM 宽字符,按偶数位 ASCII 判)
         // 与 UTF-8 BOM(记事本另存形态)。内容本身纯 ASCII,各分支直拷码位即可。
@@ -283,22 +307,25 @@ function loadScale(): number | null {
                 txt += String.fromCharCode(u8[i])
         }
         const v = JSON.parse(txt).scale
-        return (typeof v === 'number' && SCALES.indexOf(v) >= 0) ? v : null
-    } catch (e) { return null }
+        res = (typeof v === 'number' && SCALES.indexOf(v) >= 0) ? v : null
+    } catch (e) { log('loadScale: parse err ' + e); return null }
+    log('loadScale: -> ' + res)
+    return res
 }
 /** 写 {scale:…}；任何失败静默（挂件不因配置起不来） */
 function saveScale(s: number) {
     try {
-        const p = cfgPath(); if (!p) return
+        const p = cfgPath(); if (!p) { log('saveScale: no cfgPath'); return }
         const fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-        if (fd === null || fd < 0) return
+        if (fd === null || fd < 0) { log('saveScale: open failed'); return }
         const txt = JSON.stringify({ scale: s })
         const buf = new ArrayBuffer(txt.length)
         const u8 = new Uint8Array(buf)
         for (let i = 0; i < txt.length; i++) u8[i] = txt.charCodeAt(i)
-        os.write(fd, buf, 0, txt.length)
+        const nw = os.write(fd, buf, 0, txt.length)
         os.close(fd)
-    } catch (e) { /* 静默 */ }
+        log('saveScale: wrote ' + nw + 'B "' + txt + '"')
+    } catch (e) { log('saveScale: err ' + e) }
 }
 
 gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number) => {
@@ -352,6 +379,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
             EndPaint(hwnd, paintBuf.ptr)
         } catch (e) {
             print('paint err: ' + e)
+            log('paint err: ' + e)
         }
         return 0
     }
@@ -374,6 +402,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
             gui.AppendMenu(menu, 0, MENU_EXIT, '退出(&X)')
             const cmd = gui.TrackPopupMenu(menu, p ? p[0] : 0, p ? p[1] : 0, undefined, hwnd)
             gui.DestroyMenu(menu)
+            log('menu cmd=' + cmd + ' (EXIT=' + MENU_EXIT + ' TOPMOST=' + MENU_TOPMOST + ' SCALE_BASE=' + MENU_SCALE_BASE + ')')
             if (cmd === MENU_EXIT) {
                 gui.ShellNotifyIcon(gui.NotifyIconCmd.DELETE, { hwnd, uID: 1 } as any)
                 gui.PostQuitMessage(0)
@@ -395,7 +424,10 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
 })
 
 // 大小档：配置（%TEMP%/deskmon.json）> 系统 DPI 就近取档；派生 MON_* 与字体后建窗
-applyScale(loadScale() ?? defaultScaleByDpi())
+const _bootCfg = loadScale()
+const _bootDpi = _bootCfg === null ? defaultScaleByDpi() : null
+log('boot: cfg=' + _bootCfg + ' dpiDefault=' + _bootDpi + ' -> scale=' + (_bootCfg ?? _bootDpi))
+applyScale(_bootCfg ?? _bootDpi ?? 1)
 
 // 工作区右下角（任务栏上沿）落位
 const wa: any = RECT.alloc()
@@ -452,4 +484,5 @@ function tick() {
 }
 print('deskmon started: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY
     + ') scale=' + scale + ' topmost=' + topmost + ' tick=' + TICK_MS + 'ms')
+log('boot done: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY + ') scale=' + scale)
 setTimeout(tick, TICK_MS)
