@@ -34,7 +34,7 @@
 <body>
   <a class="back" href="../">&larr; 全部示例</a>
   <h1>deskmon（桌面监控悬浮窗）</h1>
-  <p class="sub">常驻桌面细条：网速 / 内存 / CPU 使用率，1 秒刷新。</p>
+  <p class="sub">一条贴在桌面上的小挂件：实时显示网速、内存和 CPU 使用率，每秒刷新。</p>
 
   <div class="shots">
     <img src="screenshots/win11.png" alt="Windows 11 下的 deskmon" loading="lazy">
@@ -46,14 +46,8 @@
   </div>
 
   <p>
-    整窗可拖（WM_NCHITTEST 全区映射到 HTCAPTION）；托盘右键切换置顶或退出；
-    点窗口右上角关闭只隐藏到托盘，进程保持常驻。
-  </p>
-  <p>
-    数据全部来自 Win32 FFI（<code>GetSystemTimes</code> / <code>GlobalMemoryStatusEx</code> /
-    <code>GetIfTable</code>），零第三方依赖；
-    窗口 <code>WM_PAINT</code> 自绘（Win8 前 STATIC 子控件不参与 layered 合成），
-    半透明 + 圆角 + 免任务栏按钮。
+    可随手拖到任意位置，位置和背景深浅会被记住，重启自动恢复。
+    托盘右键菜单：置顶、大小档（100%&ndash;200%）、浅色 / 深色背景、开机自启动、退出。
   </p>
 
   <p class="meta">
