@@ -1,10 +1,11 @@
 // 构建链：多 demo 版（唯一入口：npm run build）
 //   扫描 demos/*/src/main.ts，每个 demo 依次走三阶段：
-//   stage 1: TypeScript Compiler API —— 类型检查 + emit 到 .tsc-out/<name>/main.js
-//            （const enum 在此内联为数字，esbuild 不解析 .d.ts，gui.WindowStyle.* 等枚举
-//             引用靠这一步变成字面量）。自定义 resolveModuleNames 把 quickwin/* 钉在包内
-//             .js 上：外来 JS 弱推断、不进语义检查，避免包内源码与本项目 tsconfig 干扰。
-//   stage 2: esbuild —— bundle 成自包含 ESM 单文件（gui/std/os/ffi 等为运行时模块，external）
+//   stage 1: TypeScript Compiler API —— 纯类型检查（noEmit）。自定义 resolveModuleNames
+//            把 quickwin/constants 钉在包内 .ts（const enum 唯一定义）、quickwin/*.js 钉在
+//            包内 .js 上：外来 JS 弱推断、不进语义检查，避免包内源码与本项目 tsconfig 干扰。
+//   stage 2: esbuild —— 直接 bundle demos/*/src/main.ts 成自包含 ESM 单文件（gui/std/os/ffi
+//            等运行时模块 external）。const enum 内联由 esbuild 自己完成（constants.ts 是
+//            真 .ts 源，≥0.21 可见定义即内联为字面量），无需 tsc emit 中转。
 //   stage 3: embed —— brotli 压缩后追加进 exe 尾部（[exe][js][u32 len]["QWBR"]，
 //            同主仓 scripts/embed-js.mjs 格式）
 //
@@ -50,14 +51,22 @@ if (cfg.error) {
     process.exit(1)
 }
 const parsed = ts.parseJsonConfigFileContent(cfg.config, ts.sys, '.')
-const options: ts.CompilerOptions = { ...parsed.options, allowJs: true }
+const options: ts.CompilerOptions = { ...parsed.options, allowJs: true, noEmit: true }
 
 function makeHost(): ts.CompilerHost {
     const host = ts.createCompilerHost(options)
     host.resolveModuleNames = (moduleNames, containingFile) =>
         moduleNames.map((name) => {
             if (name.startsWith('quickwin/')) {
-                // 钉在包内 .js 上（name 自带 .js 后缀）；allowJs 下外来 JS 只做弱推断、不做语义检查
+                // quickwin/constants 是真 .ts（const enum 唯一定义），钉 .ts 让 tsc 内联；
+                // 其余钉包内 .js（name 自带 .js 后缀）；allowJs 下外来 JS 只做弱推断、不做语义检查
+                if (name === 'quickwin/constants') {
+                    return {
+                        resolvedFileName: join('node_modules', 'quickwin', 'constants.ts'),
+                        extension: ts.Extension.Ts,
+                        isExternalLibraryImport: true,
+                    }
+                }
                 return {
                     resolvedFileName: join('node_modules', name),
                     extension: ts.Extension.Js,
@@ -69,7 +78,7 @@ function makeHost(): ts.CompilerHost {
     return host
 }
 
-function tscOne(demo: string): string {
+function tscOne(demo: string): void {
     const root = join(DEMOS_DIR, demo)
     const entryTs = join(root, 'src', 'main.ts')
     // 每个 demo 独立 program，避免跨 demo 的模块解析干扰
@@ -87,12 +96,6 @@ function tscOne(demo: string): string {
         }))
         throw new Error(`tsc failed for ${demo}`)
     }
-    const emitResult = program.emit()
-    if (emitResult.emitSkipped) throw new Error(`tsc: emit skipped for ${demo}`)
-    // tsc 保持相对 rootDir 的路径 → .tsc-out/<demo>/src/main.js
-    const entryJs = join('.tsc-out', demo, 'src', 'main.js')
-    if (!existsSync(entryJs)) throw new Error(`tsc did not emit ${entryJs}`)
-    return entryJs
 }
 
 for (const d of demos) tscOne(d)
@@ -105,11 +108,12 @@ rmSync('dist', { recursive: true, force: true })
 mkdirSync('dist', { recursive: true })
 
 for (const d of demos) {
-    const entryJs = join('.tsc-out', d, 'src', 'main.js')
+    // 直接从 .ts 源打包（esbuild 原生支持 TS；const enum 内联、.js→.ts 回退解析都由它完成）
+    const entryTs = join(DEMOS_DIR, d, 'src', 'main.ts')
     const jsOut = join('dist', `${d}.js`)
     const exeOut = join('dist', `${d}.exe`)
     const result = await build({
-        entryPoints: [entryJs],
+        entryPoints: [entryTs],
         bundle: true,
         format: 'esm',          // 产物保留 `import * as gui from "gui"`；CJS 会在运行时报 Dynamic require
         outfile: jsOut,

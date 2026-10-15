@@ -11,9 +11,9 @@
 //   内存   GlobalMemoryStatusEx（kernel32）
 //   网速   GetIfTable 遍历非 loopback 且 OPER_UP 的接口，In/OutOctets 差分（iphlpapi）
 //
-// 构建：npm run build（build.ts：tsc → esbuild --bundle → brotli embed）
-//   - tsc 负责类型检查，并把 quickwin_const.d.ts 的 const enum（gui.WindowStyle 等）
-//     内联为数字字面量——esbuild 不解析 .d.ts，这一步是枚举可用的前提
+// 构建：npm run build（build.ts：tsc noEmit 类型检查 → esbuild --bundle → brotli embed）
+//   - 枚举（WindowStyle 等）import 自 quickwin/constants（真 .ts），const enum 内联
+//     由 esbuild 完成（字面量直接进 bundle）；tsc 仅做类型检查
 //   - gui/std/os/ffi 为运行时模块，bundle 保留 ESM import（format=esm）
 import * as gui from 'gui'
 import * as os from 'os'
@@ -27,6 +27,7 @@ import { CreateSolidBrush, SetBkMode, SetTextColor, SelectObject, CreateFontIndi
 import { RECT, PAINTSTRUCT, LOGFONTW, SIZE } from 'quickwin/lib/windows/structs.js'
 import { RegCloseKey, RegCreateKeyEx, RegOpenKeyEx, RegQueryValueEx, RegSetValueEx } from 'quickwin/lib/windows/advapi32.js'
 import { ICON_NET_B64, ICON_MEM_B64, ICON_CPU_B64 } from './icons.js'
+import { BackgroundMode, DeviceCap, HKey, IDI, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosHwnd, WindowStyle, WmMsg } from 'quickwin/constants'
 
 // ── setTimeout 桥接：os 事件循环已与 gui 消息泵集成（quickjs-libc 消息泵里 poll 定时器）──
 if (typeof (globalThis as any).setTimeout === 'undefined') {
@@ -35,8 +36,8 @@ if (typeof (globalThis as any).setTimeout === 'undefined') {
 }
 
 // ── 常量 ──
-// Win32 枚举（WindowStyle/WmMsg/NotifyIconCmd/...）来自 quickwin.d.ts 的 const enum，
-// 由构建链的 tsc 阶段内联为数字（esbuild 只拿 .tsc-out 的字面量产物）
+// Win32 枚举（WindowStyle/WmMsg/NotifyIconCmd/...）import 自 quickwin/constants（真 .ts），
+// 由 esbuild 在 bundle 时内联为数字字面量
 const WM_TRAY = 0x8001          // 托盘回调消息（自定义）
 const WM_NCHITTEST = 0x0084
 const WM_PAINT = 0x000F
@@ -256,7 +257,7 @@ function defaultScaleByDpi(): number {
     try {
         const dc = GetDC(0 as any)       // NULL → 桌面 DC（引擎层 NULL=0 直通）
         if (dc) {
-            const dpi = GetDeviceCaps(dc, gui.DeviceCap.LOGPIXELSX)
+            const dpi = GetDeviceCaps(dc, DeviceCap.LOGPIXELSX)
             ReleaseDC(0 as any, dc)
             log('defaultScaleByDpi: dpi=' + dpi)
             if (dpi > 0) {
@@ -355,7 +356,7 @@ function autostartGet(): boolean {
     let on = false
     try {
         const phk = new PtrArrayBuffer(8)
-        const rc = RegOpenKeyEx(gui.HKey.CURRENT_USER, AUTOSTART_KEY, 0, gui.RegAccess.READ, phk)
+        const rc = RegOpenKeyEx(HKey.CURRENT_USER, AUTOSTART_KEY, 0, RegAccess.READ, phk)
         if (rc === 0) {
             const hkey = readRegPtr(new DataView(phk))
             // 空探针（lpData=NULL）：值存在即 0，不读数据——test_registry 同款
@@ -379,13 +380,13 @@ function autostartSet(on: boolean): boolean {
         }
         const phk = new PtrArrayBuffer(8)
         rc = on
-            ? RegCreateKeyEx(gui.HKey.CURRENT_USER, AUTOSTART_KEY, 0, NULL, 0,
-                gui.RegAccess.SET_VALUE, NULL, phk, NULL)
-            : RegOpenKeyEx(gui.HKey.CURRENT_USER, AUTOSTART_KEY, 0, gui.RegAccess.SET_VALUE, phk)
+            ? RegCreateKeyEx(HKey.CURRENT_USER, AUTOSTART_KEY, 0, NULL, 0,
+                RegAccess.SET_VALUE, NULL, phk, NULL)
+            : RegOpenKeyEx(HKey.CURRENT_USER, AUTOSTART_KEY, 0, RegAccess.SET_VALUE, phk)
         if (rc === 0) {
             const hkey = readRegPtr(new DataView(phk))
             rc = on
-                ? RegSetValueEx(hkey, AUTOSTART_VAL, 0, gui.RegType.SZ,
+                ? RegSetValueEx(hkey, AUTOSTART_VAL, 0, RegType.SZ,
                     wbuf(data), (data.length + 1) * 2)
                 : RegDeleteValue(hkey, AUTOSTART_VAL)   // 2 = 值不在（关态已达成）
             RegCloseKey(hkey)
@@ -412,7 +413,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
                 SelectObject(hdc, bgBrush)
                 RoundRect(hdc, 0, 0, MON_W - 1, MON_H - 1, RGN_RADIUS, RGN_RADIUS)
                 if (font) SelectObject(hdc, font)
-                SetBkMode(hdc, gui.BackgroundMode.TRANSPARENT)   // 底已 RoundRect 填充，文字背景透明防覆盖
+                SetBkMode(hdc, BackgroundMode.TRANSPARENT)   // 底已 RoundRect 填充，文字背景透明防覆盖
                 SetTextColor(hdc, COLOR_WHITE)
                 // 分段 [icon] 值文本水平居中：先 GetTextExtentPoint32 累加总宽，
                 // 再从 (MON_W - total)/2 起绘
@@ -473,12 +474,12 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
             gui.DestroyMenu(menu)
             log('menu cmd=' + cmd + ' (EXIT=' + MENU_EXIT + ' TOPMOST=' + MENU_TOPMOST + ' SCALE_BASE=' + MENU_SCALE_BASE + ' AUTOSTART=' + MENU_AUTOSTART + ')')
             if (cmd === MENU_EXIT) {
-                gui.ShellNotifyIcon(gui.NotifyIconCmd.DELETE, { hwnd, uID: 1 } as any)
+                gui.ShellNotifyIcon(NotifyIconCmd.DELETE, { hwnd, uID: 1 } as any)
                 gui.PostQuitMessage(0)
             } else if (cmd === MENU_TOPMOST) {
                 topmost = !topmost
                 // SWP_NOMOVE | SWP_NOSIZE
-                gui.SetWindowPos(hwnd, topmost ? gui.SetWindowPosHwnd.TOPMOST : gui.SetWindowPosHwnd.NOTOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
+                gui.SetWindowPos(hwnd, topmost ? SetWindowPosHwnd.TOPMOST : SetWindowPosHwnd.NOTOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
             } else if (cmd >= MENU_SCALE_BASE && cmd < MENU_SCALE_BASE + SCALES.length) {
                 applyScale(SCALES[cmd - MENU_SCALE_BASE], true)   // 切档即持久化
             } else if (cmd === MENU_AUTOSTART) {
@@ -488,7 +489,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
         }
         return 0
     }
-    if (msg === gui.WmMsg.CLOSE) {   // 关窗 = 隐藏到托盘（常驻），仅菜单退出
+    if (msg === WmMsg.CLOSE) {   // 关窗 = 隐藏到托盘（常驻），仅菜单退出
         gui.ShowWindow(hwnd, 0)      // SW_HIDE
         return 0
     }
@@ -512,7 +513,7 @@ const initY = (work.bottom || 768) - MON_H - 40   // 默认稍抬高：距任务
 // 否则任务栏已按普通窗口建好按钮（事后补 TOOLWINDOW 两机实测不刷新）
 hwndMain = gui.CreateWindow(
     'DeskMon', '',
-    gui.WindowStyle.POPUP,
+    WindowStyle.POPUP,
     initX, initY, MON_W, MON_H, null, null)
 if (!hwndMain) os.exit(1)
 
@@ -527,13 +528,13 @@ gui.ShowWindow(hwndMain, 5)   // SW_SHOW：此刻起任务栏按 TOOLWINDOW 不�
 // Tahoma 字体已在 applyScale 创建（按档 lfHeight），此处不再单独建
 
 // 置顶 + 托盘
-gui.SetWindowPos(hwndMain, gui.SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
+gui.SetWindowPos(hwndMain, SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
 let hIcon: any = gui.LoadAppIcon()
-if (!hIcon) hIcon = gui.LoadImage(null, gui.IDI.APPLICATION, gui.ImageType.ICON, 0, 0, gui.LoadImageFlag.SHARED)
+if (!hIcon) hIcon = gui.LoadImage(null, IDI.APPLICATION, ImageType.ICON, 0, 0, LoadImageFlag.SHARED)
 if (hIcon) {
-    gui.ShellNotifyIcon(gui.NotifyIconCmd.ADD, {
+    gui.ShellNotifyIcon(NotifyIconCmd.ADD, {
         hwnd: hwndMain, uID: 1,
-        flags: gui.NotifyIconFlag.MESSAGE | gui.NotifyIconFlag.ICON,
+        flags: NotifyIconFlag.MESSAGE | NotifyIconFlag.ICON,
         callbackMessage: WM_TRAY,
         hIcon,
     } as any)

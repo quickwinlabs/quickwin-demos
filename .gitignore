@@ -1,5 +1,4 @@
 node_modules/
-.tsc-out/
 dist/
 dist-pages/
 log_*.txt
