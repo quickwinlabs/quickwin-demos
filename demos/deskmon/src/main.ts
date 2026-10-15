@@ -1,8 +1,9 @@
 // deskmon —— quickwin 桌面资源监控悬浮窗
 //
-// 常驻桌面细条：网速 / 内存 / CPU，1s 刷新；托盘右键菜单支持置顶切换、大小档、开机自启动与退出；
+// 常驻桌面细条：网速 / 内存 / CPU，1s 刷新；托盘右键菜单支持置顶切换、大小档、开机自启动、背景深浅与退出；
 // 大小档 = 整窗倍率缩放（尺寸/圆角/间距/字体/图标一起乘），默认跟随系统 DPI
-// （GetDeviceCaps/96 就近取档），切换后写 %TEMP%/deskmon.json（缺失/损坏静默回默认）。
+// （GetDeviceCaps/96 就近取档）；档位/背景深浅/拖动位置均写 %TEMP%/deskmon.json
+// （缺失/损坏静默回默认），重启恢复上次位置与背景（工作区外回落默认）。
 // 整窗 WM_NCHITTEST→HTCAPTION 全区可拖。半透明背景：WS_EX_LAYERED + LWA_ALPHA
 // （XP 软件混合 / win7+ DWM，桌面壁纸透出）。文字由父窗 WM_PAINT 自绘而非 STATIC
 // 子控件——Win8 起才支持 layered 子窗口合成，Win8 前 child 不参与（MSDN）。
@@ -42,15 +43,21 @@ const WM_TRAY = 0x8001          // 托盘回调消息（自定义）
 const WM_NCHITTEST = 0x0084
 const WM_PAINT = 0x000F
 const WM_ERASEBKGND = 0x0014
+const WM_EXITSIZEMOVE = 0x0232     // 系统拖动（整窗 HTCAPTION）结束
 const HTCAPTION = 2             // 整窗返回此命中码 = 系统级窗口拖动
 const GWL_EXSTYLE = -20         // Gwlp 枚举无 EXSTYLE → 字面量绕过枚举域
 const WS_EX_LAYERED = 0x00080000
 const WS_EX_TOOLWINDOW = 0x00000080   // 工具窗口：任务栏不显示按钮、Alt+Tab 不列出（常驻入口只留托盘）
 const LWA_ALPHA = 0x2           // SetLayeredWindowAttributes 用全局 alpha（非色键）
 const ALPHA = 130               // 不透明度 0-255（≈51%：更强挂件感，白字仍可读）
-const COLOR_BG = 0x00101010     // 底色（COLORREF 0x00BBGGFF 近黑）：整窗按 alpha 混合到桌面
-const COLOR_BORDER = 0x00555555 // 1px 描边：比底色亮一档的内敛挂件感
-const COLOR_WHITE = 0x00FFFFFF
+// 背景主题（COLORREF 0x00BBGGRR）：深色为默认；浅色必须连文字一起翻转，否则白底白字不可读。
+// 边框两档共用深灰：alpha 半透明下深浅底都能收边。
+const THEME = [
+    { bg: 0x00101010, text: 0x00FFFFFF, border: 0x00555555 },   // 0 深色（近黑）
+    { bg: 0x00FFFFFF, text: 0x00000000, border: 0x00555555 },   // 1 浅色（纯白）
+]
+let bgLight = false              // 当前浅色与否：启动从 cfg 恢复，托盘菜单切换
+let colorText = THEME[0].text    // 文字色随主题；paint 每帧读
 const DT_FLAGS = 0x00000824     // DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX；DT_VCENTER 无 SINGLELINE 时被 MS 忽略→顶对齐
 const SPI_GETWORKAREA = 0x0030  // 工作区（不含任务栏）——悬浮窗贴任务栏上沿
 const IF_TYPE_SOFTWARE_LOOPBACK = 24   // 注意：6 = IF_TYPE_ETHERNET_CSMACD（以太网），别搞混
@@ -72,6 +79,7 @@ const MENU_EXIT = 1
 const MENU_TOPMOST = 2
 const MENU_SCALE_BASE = 10          // 大小子菜单 id 基址：10..13 ↔ SCALES 各档
 const MENU_AUTOSTART = 4            // 开机自启动开关（1/2/10..13 已占）
+const MENU_BG = 5                   // 背景深浅切换
 const MAX_IF = 64               // 接口数上限：MIB_IFTABLE 缓冲按 64 行预分配
 // MIB_IFROW（实测行距 860B = MSDN sizeof；mingw 头的 852 少 8B 尾部 padding）——
 //   首行偏移：dwIndex@512 dwType@516 dwMtu@520 dwSpeed@524
@@ -221,8 +229,20 @@ let segTexts = ['starting…', '', '']
 let font: any = null               // Tahoma（按档 lfHeight），applyScale 重建并删旧
 let hwndMain: any = null           // 建窗前先 applyScale 派生尺寸；窗存在后调档原地改几何
 const paintBuf = PAINTSTRUCT.alloc()     // BeginPaint/EndPaint 出参（消息内复用）
-const bgBrush = CreateSolidBrush(COLOR_BG)
-const borderPen = CreatePen(0, 1, COLOR_BORDER)   // PS_SOLID：1px 描边
+let bgBrush = CreateSolidBrush(THEME[0].bg)
+let borderPen = CreatePen(0, 1, THEME[0].border)   // PS_SOLID：1px 描边
+
+/** 切背景深浅：重建 brush/pen + 文字色并重绘；persist=true 时写盘 */
+function setBg(light: boolean, persist = false) {
+    bgLight = light
+    const th = THEME[light ? 1 : 0]
+    log('setBg: light=' + light + ' delBrush=' + DeleteObject(bgBrush) + ' delPen=' + DeleteObject(borderPen))
+    bgBrush = CreateSolidBrush(th.bg)
+    borderPen = CreatePen(0, 1, th.border)
+    colorText = th.text
+    if (hwndMain) gui.InvalidateRect(hwndMain, null, false)
+    if (persist) { cfgData.bg = light ? 1 : 0; saveCfg() }
+}
 
 // ── 大小档：派生几何/字体 + 持久化（全程静默降级，配置坏了不影响挂件）──
 function applyScale(s: number, persist = false) {
@@ -249,7 +269,7 @@ function applyScale(s: number, persist = false) {
         log('  new=' + MON_W + 'x' + MON_H + ' swp=' + r1 + ' rgn=' + r2 +
             ' rectNow=' + JSON.stringify(gui.GetWindowRect(hwndMain)))
     }
-    if (persist) saveScale(s)
+    if (persist) { cfgData.scale = s; saveCfg() }
 }
 /** 系统 DPI（GetDeviceCaps/LOGPIXELSX ÷ 96）就近取档；探测失败（XP/异常）回 1 */
 function defaultScaleByDpi(): number {
@@ -290,17 +310,21 @@ function log(msg: string) {
         os.close(fd)
     } catch (e) { /* 日志失败不影响挂件 */ }
 }
-/** 读档位；缺失/损坏/非档位值 → null（调用方回默认） */
-function loadScale(): number | null {
-    let res: number | null = null
+type Cfg = { scale?: number; bg?: number; pos?: { x: number; y: number } }
+/** 运行期配置：启动读一次进 cfgData，任一字段变更统一 saveCfg 整写（旧文件缺字段回落默认） */
+let cfgData: Cfg = {}
+
+/** 读配置；缺失/损坏 → {}（各字段回落默认） */
+function loadCfg(): Cfg {
+    const res: Cfg = {}
     try {
-        const p = cfgPath(); if (!p) { log('loadScale: no TEMP/cfgPath'); return null }
+        const p = cfgPath(); if (!p) { log('loadCfg: no TEMP/cfgPath'); return res }
         const fd = os.open(p, os.O_RDONLY)
-        if (fd === null || fd < 0) { log('loadScale: open failed (' + p + ')'); return null }
+        if (fd === null || fd < 0) { log('loadCfg: open failed (' + p + ')'); return res }
         const buf = new ArrayBuffer(256)
         const n = os.read(fd, buf, 0, 256)
         os.close(fd)
-        if (n <= 0) { log('loadScale: empty file'); return null }
+        if (n <= 0) { log('loadCfg: empty file'); return res }
         const u8 = new Uint8Array(buf)
         // 文本解码:兼容 UTF-16LE(带 BOM;cmd `echo` 落盘是无 BOM 宽字符,按偶数位 ASCII 判)
         // 与 UTF-8 BOM(记事本另存形态)。内容本身纯 ASCII,各分支直拷码位即可。
@@ -313,26 +337,42 @@ function loadScale(): number | null {
             for (let i = u8[0] === 0xef && u8[1] === 0xbb && u8[2] === 0xbf ? 3 : 0; i < n; i++)
                 txt += String.fromCharCode(u8[i])
         }
-        const v = JSON.parse(txt).scale
-        res = (typeof v === 'number' && SCALES.indexOf(v) >= 0) ? v : null
-    } catch (e) { log('loadScale: parse err ' + e); return null }
-    log('loadScale: -> ' + res)
+        const v = JSON.parse(txt)
+        if (typeof v.scale === 'number' && SCALES.indexOf(v.scale) >= 0) res.scale = v.scale
+        if (v.bg === 0 || v.bg === 1) res.bg = v.bg
+        if (v.pos && typeof v.pos.x === 'number' && typeof v.pos.y === 'number')
+            res.pos = { x: Math.round(v.pos.x), y: Math.round(v.pos.y) }
+    } catch (e) { log('loadCfg: parse err ' + e); return {} }
+    log('loadCfg: -> ' + JSON.stringify(res))
     return res
 }
-/** 写 {scale:…}；任何失败静默（挂件不因配置起不来） */
-function saveScale(s: number) {
+/** 写 cfgData 整对象；任何失败静默（挂件不因配置起不来） */
+function saveCfg() {
     try {
-        const p = cfgPath(); if (!p) { log('saveScale: no cfgPath'); return }
+        const p = cfgPath(); if (!p) { log('saveCfg: no cfgPath'); return }
         const fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-        if (fd === null || fd < 0) { log('saveScale: open failed'); return }
-        const txt = JSON.stringify({ scale: s })
+        if (fd === null || fd < 0) { log('saveCfg: open failed'); return }
+        const txt = JSON.stringify(cfgData)
         const buf = new ArrayBuffer(txt.length)
         const u8 = new Uint8Array(buf)
         for (let i = 0; i < txt.length; i++) u8[i] = txt.charCodeAt(i)
         const nw = os.write(fd, buf, 0, txt.length)
         os.close(fd)
-        log('saveScale: wrote ' + nw + 'B "' + txt + '"')
-    } catch (e) { log('saveScale: err ' + e) }
+        log('saveCfg: wrote ' + nw + 'B "' + txt + '"')
+    } catch (e) { log('saveCfg: err ' + e) }
+}
+
+/** 拖动结束/退出时记住窗口左上角；位置未变不写盘 */
+function savePos(h: any) {
+    try {
+        const r: any = gui.GetWindowRect(h)
+        if (!r) { log('savePos: no rect'); return }
+        const p = cfgData.pos
+        if (p && p.x === r.left && p.y === r.top) return
+        cfgData.pos = { x: r.left, y: r.top }
+        saveCfg()
+        log('savePos: ' + r.left + ',' + r.top)
+    } catch (e) { log('savePos: err ' + e) }
 }
 
 // ── 开机自启动：HKCU Run 键即状态源（启动读一次打勾，切换按返回码决定翻转）；
@@ -414,7 +454,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
                 RoundRect(hdc, 0, 0, MON_W - 1, MON_H - 1, RGN_RADIUS, RGN_RADIUS)
                 if (font) SelectObject(hdc, font)
                 SetBkMode(hdc, BackgroundMode.TRANSPARENT)   // 底已 RoundRect 填充，文字背景透明防覆盖
-                SetTextColor(hdc, COLOR_WHITE)
+                SetTextColor(hdc, colorText)
                 // 分段 [icon] 值文本水平居中：先 GetTextExtentPoint32 累加总宽，
                 // 再从 (MON_W - total)/2 起绘
                 const icons = [hIconNet, hIconMem, hIconCpu]
@@ -468,13 +508,15 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
             }
             gui.AppendMenu(menu, 0x10, sub, '大小(&S)')
             gui.AppendMenu(menu, autostart ? 0x8 : 0, MENU_AUTOSTART, '开机自启动(&A)')   // MF_CHECKED 按 Run 键实况
+            gui.AppendMenu(menu, bgLight ? 0x8 : 0, MENU_BG, '浅色背景(&B)')   // MF_CHECKED = 浅色生效中
             gui.AppendMenu(menu, 0x0800, 0, '')   // MF_SEPARATOR
             gui.AppendMenu(menu, 0, MENU_EXIT, '退出(&X)')
             const cmd = gui.TrackPopupMenu(menu, p ? p[0] : 0, p ? p[1] : 0, undefined, hwnd)
             gui.DestroyMenu(menu)
-            log('menu cmd=' + cmd + ' (EXIT=' + MENU_EXIT + ' TOPMOST=' + MENU_TOPMOST + ' SCALE_BASE=' + MENU_SCALE_BASE + ' AUTOSTART=' + MENU_AUTOSTART + ')')
+            log('menu cmd=' + cmd + ' (EXIT=' + MENU_EXIT + ' TOPMOST=' + MENU_TOPMOST + ' SCALE_BASE=' + MENU_SCALE_BASE + ' AUTOSTART=' + MENU_AUTOSTART + ' BG=' + MENU_BG + ')')
             if (cmd === MENU_EXIT) {
                 gui.ShellNotifyIcon(NotifyIconCmd.DELETE, { hwnd, uID: 1 } as any)
+                savePos(hwnd)   // 拖动之外的位移兜底（位置未变则不写）
                 gui.PostQuitMessage(0)
             } else if (cmd === MENU_TOPMOST) {
                 topmost = !topmost
@@ -485,8 +527,14 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
             } else if (cmd === MENU_AUTOSTART) {
                 const want = !autostart
                 if (autostartSet(want)) autostart = want   // 返回码达成才翻转；失败保持原打勾
+            } else if (cmd === MENU_BG) {
+                setBg(!bgLight, true)   // 切换即持久化
             }
         }
+        return 0
+    }
+    if (msg === WM_EXITSIZEMOVE) {   // 整窗 HTCAPTION 拖动结束：记位置，重启恢复
+        savePos(hwnd)
         return 0
     }
     if (msg === WmMsg.CLOSE) {   // 关窗 = 隐藏到托盘（常驻），仅菜单退出
@@ -496,18 +544,26 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
     return gui.DefWindowProc(hwnd, msg, _w, lParam)
 })
 
-// 大小档：配置（%TEMP%/deskmon.json）> 系统 DPI 就近取档；派生 MON_* 与字体后建窗
-const _bootCfg = loadScale()
-const _bootDpi = _bootCfg === null ? defaultScaleByDpi() : null
-log('boot: cfg=' + _bootCfg + ' dpiDefault=' + _bootDpi + ' -> scale=' + (_bootCfg ?? _bootDpi))
-applyScale(_bootCfg ?? _bootDpi ?? 1)
+// 配置（%TEMP%/deskmon.json）：档位 > 系统 DPI 就近取档；派生 MON_* 与字体后建窗
+cfgData = loadCfg()
+const _bootScale = cfgData.scale ?? null
+const _bootDpi = _bootScale === null ? defaultScaleByDpi() : null
+log('boot: cfg=' + _bootScale + ' dpiDefault=' + _bootDpi + ' -> scale=' + (_bootScale ?? _bootDpi))
+applyScale(_bootScale ?? _bootDpi ?? 1)
+if (cfgData.bg === 1) setBg(true)   // 恢复浅色主题（启动恢复不回写）
 
-// 工作区右下角（任务栏上沿）落位
+// 工作区右下角（任务栏上沿）落位；上次拖动位置与工作区相交可见则恢复
 const wa: any = RECT.alloc()
 SystemParametersInfo(SPI_GETWORKAREA, 0, wa.ptr, 0)
 const work: any = RECT.decode(wa)
-const initX = (work.right || 1024) - MON_W - 8
-const initY = (work.bottom || 768) - MON_H - 40   // 默认稍抬高：距任务栏上沿 40px
+let initX = (work.right || 1024) - MON_W - 8
+let initY = (work.bottom || 768) - MON_H - 40   // 默认稍抬高：距任务栏上沿 40px
+const savedPos = cfgData.pos
+if (savedPos && savedPos.x + MON_W > 0 && savedPos.x < (work.right || 1024) &&
+        savedPos.y + MON_H > 0 && savedPos.y < (work.bottom || 768)) {
+    initX = savedPos.x
+    initY = savedPos.y
+}
 
 // WS_POPUP（不带 VISIBLE）：EX 风格 CreateWindow 不带 → 补位后再显示，
 // 否则任务栏已按普通窗口建好按钮（事后补 TOOLWINDOW 两机实测不刷新）
@@ -557,5 +613,6 @@ function tick() {
 }
 print('deskmon started: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY
     + ') scale=' + scale + ' topmost=' + topmost + ' tick=' + TICK_MS + 'ms')
-log('boot done: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY + ') scale=' + scale)
+log('boot done: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY + ') scale=' + scale +
+    ' bg=' + (bgLight ? 'light' : 'dark') + ' pos=' + (savedPos ? 'saved' : 'default'))
 setTimeout(tick, TICK_MS)
