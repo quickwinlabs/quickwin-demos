@@ -9,9 +9,10 @@
 //   stage 3: embed —— brotli 压缩后追加进 exe 尾部（[exe][js][u32 len]["QWBR"]，
 //            同主仓 scripts/embed-js.mjs 格式）
 //
-//   注：exe 图标盖章（resedit，见 icon.svg/icon.ico/scripts/gen-icon.mjs）曾实现于此，
-//   因无签名 exe 被 Defender 云端 ML 误报（Trojan:Win32/Sabsik.TE.A!ml）暂缓；
-//   资产与工具保留，待代码签名（如 SignPath OSS）落地后可恢复。
+//   注：exe 图标盖章（resedit，见 demos/<name>/icon.ico 与 scripts/gen-icon.mjs）曾因无签名 exe
+//   被 Defender 云端 ML 误报（Trojan:Win32/Sabsik.TE.A!ml）而暂缓；2026-10-17 用当年发布的原始
+//   字节在 win11 CI 镜像复测（现代定义库 + 实时保护开 + MOTW 扫描/执行）未再触发，故恢复。
+//   仍建议尽早落地代码签名（如 SignPath OSS）以降低机器学习侧的信誉风险。
 //
 //   同时组装 GitHub Pages：
 //     dist-pages/                       ← _pages 上传根
@@ -26,6 +27,7 @@ import { join, basename } from 'node:path'
 import { brotliCompressSync, constants as zc } from 'node:zlib'
 import { build } from 'esbuild'
 import ts from 'typescript'
+import { Data, NtExecutable, NtExecutableResource, Resource } from 'resedit'
 
 // ── 枚举 demos ──
 const DEMOS_DIR = 'demos'
@@ -126,7 +128,24 @@ for (const d of demos) {
     writeFileSync(jsOut, jsBytes)
 
     console.log('[3/3] embed ...')
-    const exe = readFileSync(EXE_SRC)
+    let exe = readFileSync(EXE_SRC)
+    const iconPath = join(DEMOS_DIR, d, 'icon.ico')
+    if (existsSync(iconPath)) {
+        // resedit 盖图标；必须在嵌 JS 前——resedit 重写 PE 不保留尾部数据
+        const plainLen = exe.length
+        const pe = NtExecutable.from(exe)
+        const res = NtExecutableResource.from(pe)
+        const iconFile = Data.IconFile.from(readFileSync(iconPath))
+        Resource.IconGroupEntry.replaceIconsForResource(
+            res.entries,
+            101,       // RT_ICON_GROUP ID（底座无现成图标，资源不存在时自动追加）
+            1033,      // en-US
+            iconFile.icons.map((i) => i.data),
+        )
+        res.outputResource(pe)
+        exe = Buffer.from(pe.generate())
+        console.log(`  icon: ${iconPath} (${iconFile.icons.length} item, +${exe.length - plainLen}B)`)
+    }
     const packed = brotliCompressSync(jsBytes, {
         params: {
             [zc.BROTLI_PARAM_MODE]: zc.BROTLI_MODE_TEXT,
