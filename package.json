@@ -8,7 +8,7 @@
     "build": "tsc && node build.ts"
   },
   "dependencies": {
-    "quickwin": "^2.3.0"
+    "quickwin": "^3.0.0"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",

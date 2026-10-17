@@ -45,7 +45,7 @@ console.log(`found demos: ${demos.join(', ')}`)
 
 // ── stage 1/2: esbuild bundle + brotli embed ──
 console.log('[1/3] esbuild ...')
-const RUNTIME_MODULES = ['gui', 'std', 'os', 'sock', 'win', 'ffi', 'wolfssl', 'brotli']
+const RUNTIME_MODULES = ['gui', 'std', 'os', 'sock', 'ffi', 'wolfssl', 'brotli']
 const EXE_SRC = 'node_modules/quickwin/qwin-nowasm-x86.exe'   // 无 WASM 最小体积；x86 兼容 XP
 rmSync('dist', { recursive: true, force: true })
 mkdirSync('dist', { recursive: true })

@@ -20,19 +20,28 @@
 //   - 枚举（WindowStyle 等）import 自 quickwin/constants（真 .ts），const enum 内联
 //     由 esbuild 完成（字面量直接进 bundle）；tsc 仅做类型检查
 //   - gui/std/os/ffi 为运行时模块，bundle 保留 ESM import（format=esm）
-import * as gui from 'gui'
+//   - 3.0 起 gui 只剩建窗/消息泵原语，其余走 lib/windows/* 绑定（随 bundle 打进来）；
+//     出参位只收 def.alloc().ptr、读回走 decode——下面三处便利版（rectOf/cursorPos/exePath）
+//     即 gui.GetWindowRect / gui.GetCursorPos / win.GetModuleFileName 的等价替换
+import * as gui from 'gui'                 // 3.0 起只剩建窗/消息泵原语（清单见 quickwin.d.ts）
 import * as os from 'os'
 import * as std from 'std'
-import { GetModuleFileName } from 'win'   // 引擎高层版：不传参 = 当前进程 exe 完整路径
-import { bind } from 'quickwin/lib/ffi/bind.js'
+import { bind, WCHAR } from 'quickwin/lib/ffi/bind.js'
 import { struct } from 'quickwin/lib/ffi/struct.js'
 import { NULL, PtrArrayBuffer } from 'quickwin/lib/ffi/ctype.js'
-import { SystemParametersInfo, BeginPaint, EndPaint, DrawText, GetDC, ReleaseDC, IsWindowVisible } from 'quickwin/lib/windows/user32.js'
+import {
+    SystemParametersInfo, BeginPaint, EndPaint, DrawText, GetDC, ReleaseDC, IsWindowVisible,
+    InvalidateRect, SetWindowPos, GetWindowRect, ShowWindow, GetWindowLongPtr, SetWindowLongPtr,
+    SetForegroundWindow, GetWindow, PostQuitMessage,
+    CreatePopupMenu, AppendMenu, TrackPopupMenu, DestroyMenu, GetCursorPos, LoadImageOrdinal,
+} from 'quickwin/lib/windows/user32.js'
 import { CreateSolidBrush, SetBkMode, SetTextColor, SelectObject, CreateFontIndirect, GetTextExtentPoint32, GetDeviceCaps, DeleteObject } from 'quickwin/lib/windows/gdi32.js'
-import { RECT, PAINTSTRUCT, LOGFONTW, SIZE } from 'quickwin/lib/windows/structs.js'
+import { GetModuleFileName } from 'quickwin/lib/windows/kernel32.js'
+import { ShellNotifyIcon } from 'quickwin/lib/windows/shell32.js'
+import { RECT, PAINTSTRUCT, LOGFONTW, SIZE, POINT, NOTIFYICONDATAW } from 'quickwin/lib/windows/structs.js'
 import { RegCloseKey, RegCreateKeyEx, RegOpenKeyEx, RegQueryValueEx, RegSetValueEx } from 'quickwin/lib/windows/advapi32.js'
 import { ICON_NET_B64, ICON_MEM_B64, ICON_CPU_B64 } from './icons.js'
-import { BackgroundMode, DeviceCap, GetWindowCmd, HKey, IDI, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosFlag, SetWindowPosHwnd, WindowStyle, WmMsg } from 'quickwin/constants'
+import { BackgroundMode, DeviceCap, GetWindowCmd, HKey, IDI, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosFlag, SetWindowPosHwnd, ShowWindowCmd, TrackPopupMenuFlag, WindowStyle, WmMsg } from 'quickwin/constants'
 
 // ── setTimeout 桥接：os 事件循环已与 gui 消息泵集成（quickjs-libc 消息泵里 poll 定时器）──
 // 本项目刻意不开 DOM lib，故这里补一条引擎全局的类型声明（同 quickwin/lib/polyfill.js 里的声明；
@@ -133,6 +142,24 @@ const CreateIconFromResourceEx = bind('user32.dll', 'CreateIconFromResourceEx', 
 const DrawIconEx = bind('user32.dll', 'DrawIconEx', '<>ptr i32 i32 <>ptr i32 i32 u32 <>ptr u32 -> i32')
 // 开机自启动：lib/windows 未封装 RegDeleteValue → 自 bind（只删值，不动 Run 键本体）
 const RegDeleteValue = bind('advapi32.dll', 'RegDeleteValueW', '<>ptr <WCHAR>ptr -> i32')
+
+// ── 3.0 移除的 gui/win 便利版：就地补回（出参位只收 def.alloc().ptr，读回走 decode——
+//    方向约定见 lib/windows/user32.ts 头注释）──
+/** 窗口屏幕矩形（原 gui.GetWindowRect 返对象）；失败 → null */
+function rectOf(h: any) {
+    const rc = RECT.alloc()
+    return GetWindowRect(h, rc.ptr) ? RECT.decode(rc) : null
+}
+/** 光标屏幕坐标（原 gui.GetCursorPos 返 [x, y]）；失败 → null */
+function cursorPos() {
+    const pt = POINT.alloc()
+    return GetCursorPos(pt.ptr) ? POINT.decode(pt) : null
+}
+/** 当前进程 exe 完整路径（原 win.GetModuleFileName 无参版，MAX_PATH 缓冲）；失败 → '' */
+function exePath() {
+    const buf = WCHAR.alloc(520)
+    return GetModuleFileName(NULL, buf, 520) > 0 ? WCHAR.decode(buf) : ''
+}
 
 // ── 字段图标：base64 → RT_ICON（ico 跳 6B ICONDIR）→ 内存成像，免外置文件 ──
 const SRC_ICON = 16                // 源 ico 固定 16×16（成像尺寸）；绘制放大走 DrawIconEx 拉伸
@@ -249,7 +276,7 @@ function setBg(light: boolean, persist = false) {
     bgBrush = CreateSolidBrush(th.bg)
     borderPen = CreatePen(0, 1, th.border)
     colorText = th.text
-    if (hwndMain) gui.InvalidateRect(hwndMain, null, false)
+    if (hwndMain) InvalidateRect(hwndMain, NULL, 0)
     if (persist) { cfgData.bg = light ? 1 : 0; saveCfg() }
 }
 
@@ -272,11 +299,11 @@ function applyScale(s: number, persist = false) {
     if (hwndMain) {
         // SWP_NOMOVE(0x2)|SWP_NOZORDER(0x4)：原地改尺寸；region 圆角随之重建
         // 注意 SetWindowPos 是 7 参 (hwnd, insertAfter, x, y, cx, cy, flags)，多传会整体错位
-        const r1 = gui.SetWindowPos(hwndMain, 0, 0, 0, MON_W, MON_H, 0x0002 | 0x0004)
+        const r1 = SetWindowPos(hwndMain, SetWindowPosHwnd.TOP, 0, 0, MON_W, MON_H, 0x0002 | 0x0004)
         const r2 = SetWindowRgn(hwndMain, CreateRoundRectRgn(0, 0, MON_W, MON_H, RGN_RADIUS, RGN_RADIUS), 1)
-        gui.InvalidateRect(hwndMain, null, false)
+        InvalidateRect(hwndMain, NULL, 0)
         log('  new=' + MON_W + 'x' + MON_H + ' swp=' + r1 + ' rgn=' + r2 +
-            ' rectNow=' + JSON.stringify(gui.GetWindowRect(hwndMain)))
+            ' rectNow=' + JSON.stringify(rectOf(hwndMain)))
     }
     if (persist) { cfgData.scale = s; saveCfg() }
 }
@@ -374,7 +401,7 @@ function saveCfg() {
 /** 拖动结束/退出时记住窗口左上角；位置未变不写盘 */
 function savePos(h: any) {
     try {
-        const r: any = gui.GetWindowRect(h)
+        const r = rectOf(h)
         if (!r) { log('savePos: no rect'); return }
         const p = cfgData.pos
         if (p && p.x === r.left && p.y === r.top) return
@@ -423,7 +450,7 @@ function autostartSet(on: boolean): boolean {
     try {
         let data = ''
         if (on) {
-            path = GetModuleFileName() ?? ''
+            path = exePath()
             if (!path) { log('autostartSet: no exe path'); return false }
             data = '"' + path + '"'   // 引号包裹：Run 键路径含空格必需
         }
@@ -504,38 +531,41 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
     if (msg === WM_TRAY) {
         // lParam：0x0201 左键 / 0x0204、0x007B 右键（对齐 tray_demo）
         if (lParam === 0x0204 || lParam === 0x007B) {
-            gui.SetForegroundWindow(hwnd)
-            const p = gui.GetCursorPos()
-            const menu = gui.CreatePopupMenu()
+            SetForegroundWindow(hwnd)
+            const p = cursorPos()
+            const menu = CreatePopupMenu()
             if (!menu) return 0   // 拿不到句柄就放弃本次菜单（HMENU 是 HMENU | null）
-            gui.AppendMenu(menu, 0, MENU_TOPMOST, topmost ? '取消置顶(&T)' : '窗口置顶(&T)')
-            gui.AppendMenu(menu, 0x0800, 0, '')   // MF_SEPARATOR
+            AppendMenu(menu, 0, MENU_TOPMOST, topmost ? '取消置顶(&T)' : '窗口置顶(&T)')
+            AppendMenu(menu, 0x0800, 0, '')   // MF_SEPARATOR
             // 大小子菜单：MF_POPUP(0x10)，id 位放子菜单句柄；DestroyMenu(menu) 递归销毁
-            const sub = gui.CreatePopupMenu()
+            const sub = CreatePopupMenu()
             if (!sub) {
-                gui.DestroyMenu(menu)   // 子菜单建不出来就整条菜单放弃，别泄漏
+                DestroyMenu(menu)   // 子菜单建不出来就整条菜单放弃，别泄漏
                 return 0
             }
             for (let i = 0; i < SCALES.length; i++) {
-                gui.AppendMenu(sub, SCALES[i] === scale ? 0x8 : 0,   // MF_CHECKED 标当前档
+                AppendMenu(sub, SCALES[i] === scale ? 0x8 : 0,   // MF_CHECKED 标当前档
                     MENU_SCALE_BASE + i, Math.round(SCALES[i] * 100) + '%')
             }
-            gui.AppendMenu(menu, 0x10, sub, '大小(&S)')
-            gui.AppendMenu(menu, autostart ? 0x8 : 0, MENU_AUTOSTART, '开机自启动(&A)')   // MF_CHECKED 按 Run 键实况
-            gui.AppendMenu(menu, bgLight ? 0x8 : 0, MENU_BG, '浅色背景(&B)')   // MF_CHECKED = 浅色生效中
-            gui.AppendMenu(menu, 0x0800, 0, '')   // MF_SEPARATOR
-            gui.AppendMenu(menu, 0, MENU_EXIT, '退出(&X)')
-            const cmd = gui.TrackPopupMenu(menu, p ? p[0] : 0, p ? p[1] : 0, undefined, hwnd)
-            gui.DestroyMenu(menu)
+            AppendMenu(menu, 0x10, sub, '大小(&S)')
+            AppendMenu(menu, autostart ? 0x8 : 0, MENU_AUTOSTART, '开机自启动(&A)')   // MF_CHECKED 按 Run 键实况
+            AppendMenu(menu, bgLight ? 0x8 : 0, MENU_BG, '浅色背景(&B)')   // MF_CHECKED = 浅色生效中
+            AppendMenu(menu, 0x0800, 0, '')   // MF_SEPARATOR
+            AppendMenu(menu, 0, MENU_EXIT, '退出(&X)')
+            // 原 gui 版默认 flags = TPM_RETURNCMD | TPM_RIGHTBUTTON（返回值即命令 id）
+            const cmd = TrackPopupMenu(menu,
+                TrackPopupMenuFlag.RETURNCMD | TrackPopupMenuFlag.RIGHTBUTTON,
+                p ? p.x : 0, p ? p.y : 0, 0, hwnd, NULL)
+            DestroyMenu(menu)
             log('menu cmd=' + cmd + ' (EXIT=' + MENU_EXIT + ' TOPMOST=' + MENU_TOPMOST + ' SCALE_BASE=' + MENU_SCALE_BASE + ' AUTOSTART=' + MENU_AUTOSTART + ' BG=' + MENU_BG + ')')
             if (cmd === MENU_EXIT) {
-                gui.ShellNotifyIcon(NotifyIconCmd.DELETE, { hwnd, uID: 1 } as any)
+                ShellNotifyIcon(NotifyIconCmd.DELETE, { cbSize: NOTIFYICONDATAW.size, hWnd: hwnd, uID: 1 })
                 savePos(hwnd)   // 拖动之外的位移兜底（位置未变则不写）
-                gui.PostQuitMessage(0)
+                PostQuitMessage(0)
             } else if (cmd === MENU_TOPMOST) {
                 topmost = !topmost
                 // SWP_NOMOVE | SWP_NOSIZE
-                gui.SetWindowPos(hwnd, topmost ? SetWindowPosHwnd.TOPMOST : SetWindowPosHwnd.NOTOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
+                SetWindowPos(hwnd, topmost ? SetWindowPosHwnd.TOPMOST : SetWindowPosHwnd.NOTOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
             } else if (cmd >= MENU_SCALE_BASE && cmd < MENU_SCALE_BASE + SCALES.length) {
                 applyScale(SCALES[cmd - MENU_SCALE_BASE], true)   // 切档即持久化
             } else if (cmd === MENU_AUTOSTART) {
@@ -558,7 +588,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
         return 0
     }
     if (msg === WmMsg.CLOSE) {   // 关窗 = 隐藏到托盘（常驻），仅菜单退出
-        gui.ShowWindow(hwnd, 0)      // SW_HIDE
+        ShowWindow(hwnd, ShowWindowCmd.HIDE)      // SW_HIDE
         return 0
     }
     return gui.DefWindowProc(hwnd, msg, _w, lParam)
@@ -594,17 +624,17 @@ hwndMain = gui.CreateWindow(
 if (!hwndMain) std.exit(1)
 
 // 半透明 + 免任务栏按钮：EX 风格 CreateWindow 不带 → 事后补位（MSDN 支持的用法）
-const exStyle = gui.GetWindowLongPtr(hwndMain, GWL_EXSTYLE as any)
-gui.SetWindowLongPtr(hwndMain, GWL_EXSTYLE as any, (exStyle as number) | WS_EX_LAYERED | WS_EX_TOOLWINDOW)
+const exStyle = GetWindowLongPtr(hwndMain, GWL_EXSTYLE as any)
+SetWindowLongPtr(hwndMain, GWL_EXSTYLE as any, (exStyle as number) | WS_EX_LAYERED | WS_EX_TOOLWINDOW)
 SetLayeredWindowAttributes(hwndMain, 0, ALPHA, LWA_ALPHA)
 // 圆角 region：显示前设好（显示瞬间已是圆角；region 对象系统接管）
 SetWindowRgn(hwndMain, CreateRoundRectRgn(0, 0, MON_W, MON_H, RGN_RADIUS, RGN_RADIUS), 1)
-gui.ShowWindow(hwndMain, 5)   // SW_SHOW：此刻起任务栏按 TOOLWINDOW 不建按钮
+ShowWindow(hwndMain, ShowWindowCmd.SHOW)   // SW_SHOW：此刻起任务栏按 TOOLWINDOW 不建按钮
 
 // Tahoma 字体已在 applyScale 创建（按档 lfHeight），此处不再单独建
 
 // 置顶 + 托盘
-gui.SetWindowPos(hwndMain, SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
+SetWindowPos(hwndMain, SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
 
 // ── 置顶维持（随 tick 顺带，见文件头注释）──
 // 判据：沿 Z 序向上（GetWindow(GW_HWNDPREV)）找"可见且与自身矩形相交"的窗口 = 被压住。
@@ -613,15 +643,15 @@ gui.SetWindowPos(hwndMain, SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002
 // SWP_NOSIZE|NOMOVE|NOACTIVATE：只改 Z 序，不动几何、不抢焦点。| 拖动中/已取消置顶/无窗口：不动作。
 function keepTopmost() {
     if (!topmost || dragging || !hwndMain) return
-    const me: any = gui.GetWindowRect(hwndMain)
+    const me = rectOf(hwndMain)
     if (!me) return
-    for (let h = gui.GetWindow(hwndMain, GetWindowCmd.PREV), i = 0;
+    for (let h = GetWindow(hwndMain, GetWindowCmd.PREV), i = 0;
             h && i < 64;
-            h = gui.GetWindow(h, GetWindowCmd.PREV), i++) {
+            h = GetWindow(h, GetWindowCmd.PREV), i++) {
         if (!IsWindowVisible(h)) continue
-        const r: any = gui.GetWindowRect(h)
+        const r = rectOf(h)
         if (r && r.left < me.right && r.right > me.left && r.top < me.bottom && r.bottom > me.top) {
-            gui.SetWindowPos(hwndMain, SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0,
+            SetWindowPos(hwndMain, SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0,
                 SetWindowPosFlag.SWP_NOSIZE | SetWindowPosFlag.SWP_NOMOVE | SetWindowPosFlag.SWP_NOACTIVATE)
             log('keepTopmost: raised by ' + String(h))
             return
@@ -630,14 +660,15 @@ function keepTopmost() {
 }
 
 let hIcon: any = gui.LoadAppIcon()
-if (!hIcon) hIcon = gui.LoadImage(null, IDI.APPLICATION, ImageType.ICON, 0, 0, LoadImageFlag.SHARED)
+if (!hIcon) hIcon = LoadImageOrdinal(NULL, IDI.APPLICATION, ImageType.ICON, 0, 0, LoadImageFlag.SHARED)
 if (hIcon) {
-    gui.ShellNotifyIcon(NotifyIconCmd.ADD, {
-        hwnd: hwndMain, uID: 1,
-        flags: NotifyIconFlag.MESSAGE | NotifyIconFlag.ICON,
-        callbackMessage: WM_TRAY,
+    ShellNotifyIcon(NotifyIconCmd.ADD, {
+        cbSize: NOTIFYICONDATAW.size,
+        hWnd: hwndMain, uID: 1,
+        uFlags: NotifyIconFlag.MESSAGE | NotifyIconFlag.ICON,
+        uCallbackMessage: WM_TRAY,
         hIcon,
-    } as any)
+    })
 }
 
 // ── 刷新循环（setTimeout 自调度；无控制台时 print 静默丢弃，-o CON/-o LOG 可观察）──
@@ -651,7 +682,7 @@ function tick() {
         (mem === null ? '--' : mem) + '%',
         (cpu === null ? '--' : cpu) + '%',
     ]
-    gui.InvalidateRect(hwndMain, null, false)   // WM_PAINT 自绘（RoundRect 自擦，erase=false）
+    InvalidateRect(hwndMain, NULL, 0)   // WM_PAINT 自绘（RoundRect 自擦，erase=false）
     keepTopmost()                               // 顺带：被任务栏/其它 topmost 压下去就抬回
     print('⇅ ' + segTexts.join(''))
     setTimeout(tick, TICK_MS)
