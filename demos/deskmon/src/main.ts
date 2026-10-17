@@ -4,6 +4,10 @@
 // 大小档 = 整窗倍率缩放（尺寸/圆角/间距/字体/图标一起乘），默认跟随系统 DPI
 // （GetDeviceCaps/96 就近取档）；档位/背景深浅/拖动位置均写 %TEMP%/deskmon.json
 // （缺失/损坏静默回默认），重启恢复上次位置与背景（工作区外回落默认）。
+// 置顶维持：Win11 点任务栏会激活任务栏——同属 topmost 的窗口"后激活者居上"，挂件被压到任务栏下后
+// 自身不会再抬回。故随 1s 数据刷新顺带沿 Z 序向上看：上方只要有"可见且与自身矩形相交"的窗口
+// （点任务栏后就是任务栏）就重设 HWND_TOPMOST 抬回；没被压住时一次重设也不发。win11 实测任务栏
+// 为前台时也能抬回（若个别环境压不回，焦点一移开的下一次刷新即自愈）。拖动中跳过（改 Z 序会打断移动循环）。
 // 整窗 WM_NCHITTEST→HTCAPTION 全区可拖。半透明背景：WS_EX_LAYERED + LWA_ALPHA
 // （XP 软件混合 / win7+ DWM，桌面壁纸透出）。文字由父窗 WM_PAINT 自绘而非 STATIC
 // 子控件——Win8 起才支持 layered 子窗口合成，Win8 前 child 不参与（MSDN）。
@@ -23,12 +27,12 @@ import { GetModuleFileName } from 'win'   // 引擎高层版：不传参 = 当�
 import { bind } from 'quickwin/lib/ffi/bind.js'
 import { struct } from 'quickwin/lib/ffi/struct.js'
 import { NULL, PtrArrayBuffer } from 'quickwin/lib/ffi/ctype.js'
-import { SystemParametersInfo, BeginPaint, EndPaint, DrawText, GetDC, ReleaseDC } from 'quickwin/lib/windows/user32.js'
+import { SystemParametersInfo, BeginPaint, EndPaint, DrawText, GetDC, ReleaseDC, IsWindowVisible } from 'quickwin/lib/windows/user32.js'
 import { CreateSolidBrush, SetBkMode, SetTextColor, SelectObject, CreateFontIndirect, GetTextExtentPoint32, GetDeviceCaps, DeleteObject } from 'quickwin/lib/windows/gdi32.js'
 import { RECT, PAINTSTRUCT, LOGFONTW, SIZE } from 'quickwin/lib/windows/structs.js'
 import { RegCloseKey, RegCreateKeyEx, RegOpenKeyEx, RegQueryValueEx, RegSetValueEx } from 'quickwin/lib/windows/advapi32.js'
 import { ICON_NET_B64, ICON_MEM_B64, ICON_CPU_B64 } from './icons.js'
-import { BackgroundMode, DeviceCap, HKey, IDI, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosHwnd, WindowStyle, WmMsg } from 'quickwin/constants'
+import { BackgroundMode, DeviceCap, GetWindowCmd, HKey, IDI, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosFlag, SetWindowPosHwnd, WindowStyle, WmMsg } from 'quickwin/constants'
 
 // ── setTimeout 桥接：os 事件循环已与 gui 消息泵集成（quickjs-libc 消息泵里 poll 定时器）──
 if (typeof (globalThis as any).setTimeout === 'undefined') {
@@ -43,7 +47,6 @@ const WM_TRAY = 0x8001          // 托盘回调消息（自定义）
 const WM_NCHITTEST = 0x0084
 const WM_PAINT = 0x000F
 const WM_ERASEBKGND = 0x0014
-const WM_EXITSIZEMOVE = 0x0232     // 系统拖动（整窗 HTCAPTION）结束
 const HTCAPTION = 2             // 整窗返回此命中码 = 系统级窗口拖动
 const GWL_EXSTYLE = -20         // Gwlp 枚举无 EXSTYLE → 字面量绕过枚举域
 const WS_EX_LAYERED = 0x00080000
@@ -229,6 +232,7 @@ let segTexts = ['starting…', '', '']
 let font: any = null               // Tahoma（按档 lfHeight），applyScale 重建并删旧
 let hwndMain: any = null           // 建窗前先 applyScale 派生尺寸；窗存在后调档原地改几何
 const paintBuf = PAINTSTRUCT.alloc()     // BeginPaint/EndPaint 出参（消息内复用）
+let dragging = false               // 整窗 HTCAPTION 系统拖动中（WM_ENTERSIZEMOVE..EXITSIZEMOVE）：跳过置顶维持
 let bgBrush = CreateSolidBrush(THEME[0].bg)
 let borderPen = CreatePen(0, 1, THEME[0].border)   // PS_SOLID：1px 描边
 
@@ -533,7 +537,12 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
         }
         return 0
     }
-    if (msg === WM_EXITSIZEMOVE) {   // 整窗 HTCAPTION 拖动结束：记位置，重启恢复
+    if (msg === WmMsg.ENTERSIZEMOVE) {   // 整窗 HTCAPTION 拖动开始：期间不重设置顶（会打断移动循环）
+        dragging = true
+        return 0
+    }
+    if (msg === WmMsg.EXITSIZEMOVE) {   // 拖动结束：记位置（重启恢复）+ 立刻归位
+        dragging = false
         savePos(hwnd)
         return 0
     }
@@ -545,6 +554,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
 })
 
 // 配置（%TEMP%/deskmon.json）：档位 > 系统 DPI 就近取档；派生 MON_* 与字体后建窗
+        keepTopmost()
 cfgData = loadCfg()
 const _bootScale = cfgData.scale ?? null
 const _bootDpi = _bootScale === null ? defaultScaleByDpi() : null
@@ -596,6 +606,30 @@ if (hIcon) {
     } as any)
 }
 
+// ── 置顶维持（随 tick 顺带，见文件头注释）──
+// 判据：沿 Z 序向上（GetWindow(GW_HWNDPREV)）找"可见且与自身矩形相交"的窗口 = 被压住。
+// 只看可见 + 相交：稳态时压在上面的那批 topmost 辅助窗不可见，不会误触发；
+// 任务栏在别的显示器上/其它置顶窗口在别处时也不算被压（不会无谓地互相抢顶）。
+// SWP_NOSIZE|NOMOVE|NOACTIVATE：只改 Z 序，不动几何、不抢焦点。| 拖动中/已取消置顶/无窗口：不动作。
+function keepTopmost() {
+    if (!topmost || dragging || !hwndMain) return
+    const me: any = gui.GetWindowRect(hwndMain)
+    if (!me) return
+    for (let h = gui.GetWindow(hwndMain, GetWindowCmd.PREV), i = 0;
+            h && i < 64;
+            h = gui.GetWindow(h, GetWindowCmd.PREV), i++) {
+        if (!IsWindowVisible(h)) continue
+        const r: any = gui.GetWindowRect(h)
+        if (r && r.left < me.right && r.right > me.left && r.top < me.bottom && r.bottom > me.top) {
+            gui.SetWindowPos(hwndMain, SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0,
+                SetWindowPosFlag.SWP_NOSIZE | SetWindowPosFlag.SWP_NOMOVE | SetWindowPosFlag.SWP_NOACTIVATE)
+            log('keepTopmost: raised by ' + String(h))
+            return
+        }
+    }
+}
+
+
 // ── 刷新循环（setTimeout 自调度；无控制台时 print 静默丢弃，-o CON/-o LOG 可观察）──
 function tick() {
     const cpu = sampleCpu()
@@ -616,3 +650,4 @@ print('deskmon started: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY
 log('boot done: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY + ') scale=' + scale +
     ' bg=' + (bgLight ? 'light' : 'dark') + ' pos=' + (savedPos ? 'saved' : 'default'))
 setTimeout(tick, TICK_MS)
+    keepTopmost()                               // 顺带：被任务栏/其它 topmost 压下去就抬回
