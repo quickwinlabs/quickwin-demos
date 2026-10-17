@@ -16,7 +16,7 @@
 //   内存   GlobalMemoryStatusEx（kernel32）
 //   网速   GetIfTable 遍历非 loopback 且 OPER_UP 的接口，In/OutOctets 差分（iphlpapi）
 //
-// 构建：npm run build（build.ts：tsc noEmit 类型检查 → esbuild --bundle → brotli embed）
+// 构建：npm run build（tsc noEmit 类型检查 → build.ts：esbuild --bundle → brotli embed）
 //   - 枚举（WindowStyle 等）import 自 quickwin/constants（真 .ts），const enum 内联
 //     由 esbuild 完成（字面量直接进 bundle）；tsc 仅做类型检查
 //   - gui/std/os/ffi 为运行时模块，bundle 保留 ESM import（format=esm）
@@ -35,6 +35,11 @@ import { ICON_NET_B64, ICON_MEM_B64, ICON_CPU_B64 } from './icons.js'
 import { BackgroundMode, DeviceCap, GetWindowCmd, HKey, IDI, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosFlag, SetWindowPosHwnd, WindowStyle, WmMsg } from 'quickwin/constants'
 
 // ── setTimeout 桥接：os 事件循环已与 gui 消息泵集成（quickjs-libc 消息泵里 poll 定时器）──
+// 本项目刻意不开 DOM lib，故这里补一条引擎全局的类型声明（同 quickwin/lib/polyfill.js 里的声明；
+// 只 import polyfill 会连带打进 url/text-codec/SHA-1 等 ~12KB 死码，故不 import，自己桥接）
+declare global {
+    function setTimeout(fn: () => void, ms?: number): number
+}
 if (typeof (globalThis as any).setTimeout === 'undefined') {
     ;(globalThis as any).setTimeout = (fn: any, _ms?: number, ...a: any[]) =>
         os.setTimeout(() => fn(...a), _ms ?? 0)
@@ -227,12 +232,12 @@ function fmtRate(bps: number | null): string {
 
 // ── GUI ──
 let topmost = true
+let dragging = false               // 整窗 HTCAPTION 系统拖动中（WM_ENTERSIZEMOVE..EXITSIZEMOVE）：跳过置顶维持
 // 分段自绘文本：[网速值] [内存%] [CPU%]（图标即字段标签，段间空格；tick 更新 → InvalidateRect）
 let segTexts = ['starting…', '', '']
 let font: any = null               // Tahoma（按档 lfHeight），applyScale 重建并删旧
 let hwndMain: any = null           // 建窗前先 applyScale 派生尺寸；窗存在后调档原地改几何
 const paintBuf = PAINTSTRUCT.alloc()     // BeginPaint/EndPaint 出参（消息内复用）
-let dragging = false               // 整窗 HTCAPTION 系统拖动中（WM_ENTERSIZEMOVE..EXITSIZEMOVE）：跳过置顶维持
 let bgBrush = CreateSolidBrush(THEME[0].bg)
 let borderPen = CreatePen(0, 1, THEME[0].border)   // PS_SOLID：1px 描边
 
@@ -502,10 +507,15 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
             gui.SetForegroundWindow(hwnd)
             const p = gui.GetCursorPos()
             const menu = gui.CreatePopupMenu()
+            if (!menu) return 0   // 拿不到句柄就放弃本次菜单（HMENU 是 HMENU | null）
             gui.AppendMenu(menu, 0, MENU_TOPMOST, topmost ? '取消置顶(&T)' : '窗口置顶(&T)')
             gui.AppendMenu(menu, 0x0800, 0, '')   // MF_SEPARATOR
             // 大小子菜单：MF_POPUP(0x10)，id 位放子菜单句柄；DestroyMenu(menu) 递归销毁
             const sub = gui.CreatePopupMenu()
+            if (!sub) {
+                gui.DestroyMenu(menu)   // 子菜单建不出来就整条菜单放弃，别泄漏
+                return 0
+            }
             for (let i = 0; i < SCALES.length; i++) {
                 gui.AppendMenu(sub, SCALES[i] === scale ? 0x8 : 0,   // MF_CHECKED 标当前档
                     MENU_SCALE_BASE + i, Math.round(SCALES[i] * 100) + '%')
@@ -544,6 +554,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
     if (msg === WmMsg.EXITSIZEMOVE) {   // 拖动结束：记位置（重启恢复）+ 立刻归位
         dragging = false
         savePos(hwnd)
+        keepTopmost()
         return 0
     }
     if (msg === WmMsg.CLOSE) {   // 关窗 = 隐藏到托盘（常驻），仅菜单退出
@@ -554,7 +565,6 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
 })
 
 // 配置（%TEMP%/deskmon.json）：档位 > 系统 DPI 就近取档；派生 MON_* 与字体后建窗
-        keepTopmost()
 cfgData = loadCfg()
 const _bootScale = cfgData.scale ?? null
 const _bootDpi = _bootScale === null ? defaultScaleByDpi() : null
@@ -581,7 +591,7 @@ hwndMain = gui.CreateWindow(
     'DeskMon', '',
     WindowStyle.POPUP,
     initX, initY, MON_W, MON_H, null, null)
-if (!hwndMain) os.exit(1)
+if (!hwndMain) std.exit(1)
 
 // 半透明 + 免任务栏按钮：EX 风格 CreateWindow 不带 → 事后补位（MSDN 支持的用法）
 const exStyle = gui.GetWindowLongPtr(hwndMain, GWL_EXSTYLE as any)
@@ -595,16 +605,6 @@ gui.ShowWindow(hwndMain, 5)   // SW_SHOW：此刻起任务栏按 TOOLWINDOW 不�
 
 // 置顶 + 托盘
 gui.SetWindowPos(hwndMain, SetWindowPosHwnd.TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002)
-let hIcon: any = gui.LoadAppIcon()
-if (!hIcon) hIcon = gui.LoadImage(null, IDI.APPLICATION, ImageType.ICON, 0, 0, LoadImageFlag.SHARED)
-if (hIcon) {
-    gui.ShellNotifyIcon(NotifyIconCmd.ADD, {
-        hwnd: hwndMain, uID: 1,
-        flags: NotifyIconFlag.MESSAGE | NotifyIconFlag.ICON,
-        callbackMessage: WM_TRAY,
-        hIcon,
-    } as any)
-}
 
 // ── 置顶维持（随 tick 顺带，见文件头注释）──
 // 判据：沿 Z 序向上（GetWindow(GW_HWNDPREV)）找"可见且与自身矩形相交"的窗口 = 被压住。
@@ -629,6 +629,16 @@ function keepTopmost() {
     }
 }
 
+let hIcon: any = gui.LoadAppIcon()
+if (!hIcon) hIcon = gui.LoadImage(null, IDI.APPLICATION, ImageType.ICON, 0, 0, LoadImageFlag.SHARED)
+if (hIcon) {
+    gui.ShellNotifyIcon(NotifyIconCmd.ADD, {
+        hwnd: hwndMain, uID: 1,
+        flags: NotifyIconFlag.MESSAGE | NotifyIconFlag.ICON,
+        callbackMessage: WM_TRAY,
+        hIcon,
+    } as any)
+}
 
 // ── 刷新循环（setTimeout 自调度；无控制台时 print 静默丢弃，-o CON/-o LOG 可观察）──
 function tick() {
@@ -642,6 +652,7 @@ function tick() {
         (cpu === null ? '--' : cpu) + '%',
     ]
     gui.InvalidateRect(hwndMain, null, false)   // WM_PAINT 自绘（RoundRect 自擦，erase=false）
+    keepTopmost()                               // 顺带：被任务栏/其它 topmost 压下去就抬回
     print('⇅ ' + segTexts.join(''))
     setTimeout(tick, TICK_MS)
 }
@@ -650,4 +661,3 @@ print('deskmon started: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY
 log('boot done: ' + MON_W + 'x' + MON_H + ' @(' + initX + ',' + initY + ') scale=' + scale +
     ' bg=' + (bgLight ? 'light' : 'dark') + ' pos=' + (savedPos ? 'saved' : 'default'))
 setTimeout(tick, TICK_MS)
-    keepTopmost()                               // 顺带：被任务栏/其它 topmost 压下去就抬回

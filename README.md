@@ -35,21 +35,23 @@ demo.d/
    可选的 `src/` 其它文件、`screenshots/`、`page.html`
 2. `pages/index.html` 加一张卡片，链接到 `href="<name>/"`
 3. `npm run build` 会自动：
-   - 遍历 `demos/*/src/main.ts` 依次 tsc → esbuild → brotli embed，产出 `dist/<name>.exe`
+   - `tsc`（noEmit 类型检查，覆盖 `demos/` 全部 .ts）通过后，遍历 `demos/*/src/main.ts`
+     依次 esbuild → brotli embed，产出 `dist/<name>.exe`
    - 复制 `pages/index.html`、各 `demos/<name>/page.html`（→ `dist-pages/<name>/index.html`）、
      `screenshots/`、`dist/<name>.exe` 到 `dist-pages/`
 4. push 触发 CI，GitHub Pages 部署 `dist-pages/`
 
 ## 构建链
 
-三阶段（每个 demo 独立跑一遍）：
+`npm run build` = `tsc && node build.ts`。类型检查由 tsc 独立完成（tsconfig 已 `noEmit`，
+只报错、不产出 JS），`build.ts` 只负责打包与产物组装：
 
-1. **tsc**（TypeScript Compiler API）：类型检查 + 内联 `const enum` 为数字字面量
-   （esbuild 不解析 `.d.ts`，枚举值靠这一步变成字面量），emit 到 `.tsc-out/<demo>/src/*.js`
-2. **esbuild**：bundle 成自包含 ESM 单文件，`gui` / `std` / `os` / `ffi` 等运行时模块 `external`
-   （QuickJS 运行时提供的原生模块，保留 `import` 语句由 runtime 解析）
-3. **embed**：brotli 压缩后追加到 `qwin-nowasm-x86.exe` 尾部，尾部结构
+1. **esbuild**：bundle 成自包含 ESM 单文件，`gui` / `std` / `os` / `ffi` 等运行时模块 `external`
+   （QuickJS 运行时提供的原生模块，保留 `import` 语句由 runtime 解析）。`const enum` 内联由
+   esbuild 自己完成（`quickwin/constants` 是真 `.ts` 源，可见定义即内联为字面量），无需 tsc emit 中转
+2. **embed**：brotli 压缩后追加到 `qwin-nowasm-x86.exe` 尾部，尾部结构
    `[exe][js][u32 len]["QWBR"]`（同主仓 `scripts/embed-js.mjs` 格式）
+3. **pages**：组装 `dist-pages/`
 
 ## 运行
 

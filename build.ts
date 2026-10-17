@@ -1,13 +1,12 @@
-// 构建链：多 demo 版（唯一入口：npm run build）
-//   扫描 demos/*/src/main.ts，每个 demo 依次走三阶段：
-//   stage 1: TypeScript Compiler API —— 纯类型检查（noEmit）。自定义 resolveModuleNames
-//            把 quickwin/constants 钉在包内 .ts（const enum 唯一定义）、quickwin/*.js 钉在
-//            包内 .js 上：外来 JS 弱推断、不进语义检查，避免包内源码与本项目 tsconfig 干扰。
-//   stage 2: esbuild —— 直接 bundle demos/*/src/main.ts 成自包含 ESM 单文件（gui/std/os/ffi
+// 构建链：多 demo 版（唯一入口：npm run build = tsc && node build.ts）
+//   类型检查交给 npm 脚本里的 tsc（tsconfig.json 已 noEmit，不产出任何 JS）：
+//   覆盖 demos/ 全部 .ts，报错即中止；本脚本只做打包与产物组装：
+//   stage 1: esbuild —— 直接 bundle demos/*/src/main.ts 成自包含 ESM 单文件（gui/std/os/ffi
 //            等运行时模块 external）。const enum 内联由 esbuild 自己完成（constants.ts 是
 //            真 .ts 源，≥0.21 可见定义即内联为字面量），无需 tsc emit 中转。
-//   stage 3: embed —— brotli 压缩后追加进 exe 尾部（[exe][js][u32 len]["QWBR"]，
+//   stage 2: embed —— brotli 压缩后追加进 exe 尾部（[exe][js][u32 len]["QWBR"]，
 //            同主仓 scripts/embed-js.mjs 格式）
+//   stage 3: pages —— 组装 dist-pages/
 //
 //   注：exe 图标盖章（resedit，见 demos/<name>/icon.ico 与 scripts/gen-icon.mjs）曾因无签名 exe
 //   被 Defender 云端 ML 误报（Trojan:Win32/Sabsik.TE.A!ml）而暂缓；2026-10-17 用当年发布的原始
@@ -26,7 +25,6 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join, basename } from 'node:path'
 import { brotliCompressSync, constants as zc } from 'node:zlib'
 import { build } from 'esbuild'
-import ts from 'typescript'
 import { Data, NtExecutable, NtExecutableResource, Resource } from 'resedit'
 
 // ── 枚举 demos ──
@@ -45,65 +43,8 @@ if (demos.length === 0) {
 }
 console.log(`found demos: ${demos.join(', ')}`)
 
-// ── 共享：TS 编译器配置 ──
-console.log('[1/3] tsc ...')
-const cfg = ts.readConfigFile('tsconfig.json', ts.sys.readFile)
-if (cfg.error) {
-    console.error(ts.flattenDiagnosticMessageText(cfg.error.messageText, '\n'))
-    process.exit(1)
-}
-const parsed = ts.parseJsonConfigFileContent(cfg.config, ts.sys, '.')
-const options: ts.CompilerOptions = { ...parsed.options, allowJs: true, noEmit: true }
-
-function makeHost(): ts.CompilerHost {
-    const host = ts.createCompilerHost(options)
-    host.resolveModuleNames = (moduleNames, containingFile) =>
-        moduleNames.map((name) => {
-            if (name.startsWith('quickwin/')) {
-                // quickwin/constants 是真 .ts（const enum 唯一定义），钉 .ts 让 tsc 内联；
-                // 其余钉包内 .js（name 自带 .js 后缀）；allowJs 下外来 JS 只做弱推断、不做语义检查
-                if (name === 'quickwin/constants') {
-                    return {
-                        resolvedFileName: join('node_modules', 'quickwin', 'constants.ts'),
-                        extension: ts.Extension.Ts,
-                        isExternalLibraryImport: true,
-                    }
-                }
-                return {
-                    resolvedFileName: join('node_modules', name),
-                    extension: ts.Extension.Js,
-                    isExternalLibraryImport: true,
-                }
-            }
-            return ts.resolveModuleName(name, containingFile, options, host).resolvedModule
-        })
-    return host
-}
-
-function tscOne(demo: string): void {
-    const root = join(DEMOS_DIR, demo)
-    const entryTs = join(root, 'src', 'main.ts')
-    // 每个 demo 独立 program，避免跨 demo 的模块解析干扰
-    const rootNames = [entryTs, 'node_modules/quickwin/quickwin.d.ts']
-    const host = makeHost()
-    const program = ts.createProgram(rootNames, options, host)
-    const ownDiagnostics = ts
-        .getPreEmitDiagnostics(program)
-        .filter((d) => !d.file || d.file.fileName.replace(/\\/g, '/').includes('/demos/'))
-    if (ownDiagnostics.length > 0) {
-        console.error(ts.formatDiagnosticsWithColorAndContext(ownDiagnostics, {
-            getCanonicalFileName: (f) => f,
-            getCurrentDirectory: () => process.cwd(),
-            getNewLine: () => '\n',
-        }))
-        throw new Error(`tsc failed for ${demo}`)
-    }
-}
-
-for (const d of demos) tscOne(d)
-
-// ── stage 2/3: esbuild bundle + brotli embed ──
-console.log('[2/3] esbuild ...')
+// ── stage 1/2: esbuild bundle + brotli embed ──
+console.log('[1/3] esbuild ...')
 const RUNTIME_MODULES = ['gui', 'std', 'os', 'sock', 'win', 'ffi', 'wolfssl', 'brotli']
 const EXE_SRC = 'node_modules/quickwin/qwin-nowasm-x86.exe'   // 无 WASM 最小体积；x86 兼容 XP
 rmSync('dist', { recursive: true, force: true })
@@ -127,7 +68,7 @@ for (const d of demos) {
     const jsBytes = result.outputFiles![0].contents
     writeFileSync(jsOut, jsBytes)
 
-    console.log('[3/3] embed ...')
+    console.log('[2/3] embed ...')
     let exe = readFileSync(EXE_SRC)
     const iconPath = join(DEMOS_DIR, d, 'icon.ico')
     if (existsSync(iconPath)) {
@@ -162,8 +103,8 @@ for (const d of demos) {
     console.log(`  ${d}: ${EXE_SRC} + ${jsBytes.length}B js -> brotli ${packed.length}B -> ${exeOut} (${out.length}B)`)
 }
 
-// ── stage 4: 组装 dist-pages ──
-console.log('[4/4] pages ...')
+// ── stage 3: 组装 dist-pages ──
+console.log('[3/3] pages ...')
 const PAGES_SRC = 'pages'
 const PAGES_OUT = 'dist-pages'
 rmSync(PAGES_OUT, { recursive: true, force: true })
