@@ -10,10 +10,9 @@
     // 运行时是 QuickJS（无 DOM）：标准库按引擎提供的能力取 ES2024（quickwin 包自己用 ES2025），
     // 刻意不开 DOM —— 否则 DOM 的 TextDecoder/TextEncoder 会撞包内 polyfill 的同名全局声明
     "lib": ["es2024"],
-    "types": []
+    "types": ["quickwin"]
   },
   "include": [
-    "demos",
-    "node_modules/quickwin/quickwin.d.ts"
+    "demos"
   ]
 }
