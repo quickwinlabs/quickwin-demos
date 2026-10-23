@@ -1,0 +1,16 @@
+<!-- lanfile exe 图标：蓝底圆角方片 + 白色对向双箭头（互传/同步隐喻）
+     图案自绘（两支箭头 + 描边圆头），不引用第三方图标库 → 无许可/署名义务。
+     XP 不认 PNG 条目，故 gen-icon.mjs 为 16/24/32/48 额外生成 32bpp BMP 条目。
+     改图后跑 node scripts/gen-icon.mjs demos/lanfile 重新生成 icon.ico -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <!-- 底片：蓝底圆角方片（浅色/深色任务栏与资源管理器下都有对比度） -->
+  <rect x="2" y="2" width="44" height="44" rx="11" fill="#1f6feb"/>
+  <!-- 上升箭头（左） -->
+  <path d="M17 35 V17 M17 17 L11.5 23 M17 17 L22.5 23"
+        fill="none" stroke="#ffffff" stroke-width="4"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 下降箭头（右） -->
+  <path d="M31 13 V31 M31 31 L25.5 25 M31 31 L36.5 25"
+        fill="none" stroke="#ffffff" stroke-width="4"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
