@@ -41,7 +41,7 @@ import { ShellNotifyIcon } from 'quickwin/lib/windows/shell32.js'
 import { RECT, PAINTSTRUCT, LOGFONTW, SIZE, POINT, NOTIFYICONDATAW } from 'quickwin/lib/windows/structs.js'
 import { RegCloseKey, RegCreateKeyEx, RegOpenKeyEx, RegQueryValueEx, RegSetValueEx } from 'quickwin/lib/windows/advapi32.js'
 import { ICON_NET_B64, ICON_MEM_B64, ICON_CPU_B64 } from './icons.js'
-import { BackgroundMode, DeviceCap, GetWindowCmd, HKey, IDI, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosFlag, SetWindowPosHwnd, ShowWindowCmd, TrackPopupMenuFlag, WindowStyle, WmMsg } from 'quickwin/constants'
+import { BackgroundMode, DeviceCap, GetWindowCmd, Gwlp, HKey, IDI, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosFlag, SetWindowPosHwnd, ShowWindowCmd, TrackPopupMenuFlag, WindowStyle, WmMsg } from 'quickwin/constants'
 
 // ── setTimeout 桥接：os 事件循环已与 gui 消息泵集成（quickjs-libc 消息泵里 poll 定时器）──
 // 本项目刻意不开 DOM lib，故这里补一条引擎全局的类型声明（同 quickwin/lib/polyfill.js 里的声明；
@@ -179,10 +179,10 @@ function b64bytes(s: string): Uint8Array {
 function makeIcon(b64: string): any {
     const bytes = b64bytes(b64)
     const buf = new PtrArrayBuffer(bytes.length)
-    new Uint8Array(buf as any).set(bytes)
+    new Uint8Array(buf).set(bytes)
     // ico 布局 6B ICONDIR + 16B ICONDIRENTRY + DIB；CreateIconFromResourceEx 的
     // presbits 期望 BITMAPINFOHEADER 起（Wine/ReactOS 实现）→ 跳 22；dwVer = 0x00030000
-    return CreateIconFromResourceEx((buf as any).ptr + 22, bytes.length - 22, 1, 0x00030000, SRC_ICON, SRC_ICON, 0)
+    return CreateIconFromResourceEx(buf.ptr + 22, bytes.length - 22, 1, 0x00030000, SRC_ICON, SRC_ICON, 0)
 }
 const hIconNet = makeIcon(ICON_NET_B64)
 const hIconMem = makeIcon(ICON_MEM_B64)
@@ -225,8 +225,8 @@ let prevNetIn = -1, prevNetOut = -1, prevNetMs = 0
 /** [下行B/s, 上行B/s]；首个样本/失败返回 null */
 function sampleNet(): [number, number] | null {
     const dv = new DataView(ifBuf)
-    dv.setUint32(0, ifBuf.byteLength, true)   // 入参：缓冲容量；出参：实际所需字节
-    if (GetIfTable((ifBuf as any).ptr, (ifSize as any).ptr, 1) !== 0) return null  // NO_ERROR = 0
+    new DataView(ifSize).setUint32(0, ifBuf.byteLength, true)   // 入参：缓冲容量（写 pSize，别污染 ifBuf 的 dwNumEntries）
+    if (GetIfTable(ifBuf.ptr, ifSize.ptr, 1) !== 0) return null  // NO_ERROR = 0
     const n = Math.min(dv.getUint32(0, true), MAX_IF)
     let inSum = 0, outSum = 0
     for (let r = 0; r < n; r++) {
@@ -311,10 +311,10 @@ function applyScale(s: number, persist = false) {
 function defaultScaleByDpi(): number {
     let res = 1
     try {
-        const dc = GetDC(0 as any)       // NULL → 桌面 DC（引擎层 NULL=0 直通）
+        const dc = GetDC(NULL)       // NULL → 桌面 DC（引擎层 NULL=0 直通）
         if (dc) {
             const dpi = GetDeviceCaps(dc, DeviceCap.LOGPIXELSX)
-            ReleaseDC(0 as any, dc)
+            ReleaseDC(NULL, dc)
             log('defaultScaleByDpi: dpi=' + dpi)
             if (dpi > 0) {
                 const want = dpi / 96
@@ -499,7 +499,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
                 for (const t of segTexts) {
                     if (!t) continue
                     if (GetTextExtentPoint32(hdc, t, t.length, sz.ptr)) {
-                        total += (SIZE.decode(sz) as any).cx
+                        total += SIZE.decode(sz).cx
                     }
                 }
                 let x = Math.max(2, (MON_W - total) >> 1)
@@ -624,8 +624,8 @@ hwndMain = gui.CreateWindow(
 if (!hwndMain) std.exit(1)
 
 // 半透明 + 免任务栏按钮：EX 风格 CreateWindow 不带 → 事后补位（MSDN 支持的用法）
-const exStyle = GetWindowLongPtr(hwndMain, GWL_EXSTYLE as any)
-SetWindowLongPtr(hwndMain, GWL_EXSTYLE as any, (exStyle as number) | WS_EX_LAYERED | WS_EX_TOOLWINDOW)
+const exStyle = GetWindowLongPtr(hwndMain, GWL_EXSTYLE as unknown as Gwlp)
+SetWindowLongPtr(hwndMain, GWL_EXSTYLE as unknown as Gwlp, exStyle | WS_EX_LAYERED | WS_EX_TOOLWINDOW)
 SetLayeredWindowAttributes(hwndMain, 0, ALPHA, LWA_ALPHA)
 // 圆角 region：显示前设好（显示瞬间已是圆角；region 对象系统接管）
 SetWindowRgn(hwndMain, CreateRoundRectRgn(0, 0, MON_W, MON_H, RGN_RADIUS, RGN_RADIUS), 1)
