@@ -40,8 +40,8 @@ import { GetOpenFileName } from 'quickwin/lib/windows/comdlg32.js'
 import { RECT, OPENFILENAMEW, PAINTSTRUCT } from 'quickwin/lib/windows/structs.js'
 import { getScaleFactor } from 'quickwin/lib/dpi.js'
 import {
-    BackgroundMode, ButtonCheckState, ButtonMsg, ButtonStyle, LbMsg, RasterOp,
-    SetWindowPosFlag, SetWindowPosHwnd, ShowWindowCmd,
+    BackgroundMode, ButtonCheckState, ButtonMsg, ButtonStyle, EditStyle, LbMsg, ListBoxStyle,
+    OpenFileNameFlag, RasterOp, SetWindowPosFlag, SetWindowPosHwnd, ShowWindowCmd,
     WindowStyle, WmMsg,
 } from 'quickwin/constants'
 import * as shares from './shares.js'
@@ -49,19 +49,6 @@ import * as netif from './netif.js'
 import * as ctxmenu from './ctxmenu.js'
 import { makeQr } from './qrcode.js'
 import { setUploadDir, startServer } from './server.js'
-
-// ── 消息/控件常量（枚举缺的稳定值：字面量 + 注释；SendMessage 第二参是枚举联合，
-//    WM_COPYDATA 不在其中 → 调用点 as any）──
-const WM_COPYDATA = 0x004A      // WM_COPYDATA（WmMsg 枚举缺）
-const LBS_HASSTRINGS = 0x0040
-const WS_VSCROLL = 0x00200000
-const ES_READONLY = 0x0800
-const WS_BORDER = 0x00800000
-const OFN_HIDEREADONLY = 0x0004
-const OFN_PATHMUSTEXIST = 0x0800
-const OFN_FILEMUSTEXIST = 0x1000
-const OFN_ALLOWMULTISELECT = 0x0200
-const OFN_EXPLORER = 0x00080000
 
 // 控件 id（WM_COMMAND LOWORD(wParam)）
 const ID_ADD_FILE = 100
@@ -152,7 +139,7 @@ function forwardPath(hwnd: any, path: string | null): boolean {
         dv.setUint32(8, data ? (data as any).ptr : 0, true)
     }
     // SendMessage 同步：主进程拷完才返回，cds/data 生命周期因此安全
-    SendMessage(hwnd, WM_COPYDATA as any, 0, (cds as any).ptr)
+    SendMessage(hwnd, WmMsg.COPYDATA as any, 0, (cds as any).ptr)
     return true
 }
 
@@ -233,13 +220,13 @@ function buildControls(): void {
     const listY = PAD + CTRL_H + gap
     const rowY = clientH - PAD - CTRL_H
 
-    hAddr = child('EDIT', '', CHILD | ES_READONLY | WS_BORDER,
+    hAddr = child('EDIT', '', CHILD | EditStyle.READONLY | WindowStyle.BORDER,
         PAD, PAD, clientW - PAD * 2 - CHK_W - gap, CTRL_H, 0)
     // AUTOCHECKBOX 自己翻勾选态并回发 WM_COMMAND(BN_CLICKED)
     hBtnCtx = child('BUTTON', '右键菜单(&M)', CHILD | ButtonStyle.AUTOCHECKBOX,
         clientW - PAD - CHK_W, PAD, CHK_W, CTRL_H, ID_CTXMENU)
 
-    hList = child('LISTBOX', '', CHILD | LBS_HASSTRINGS | WS_VSCROLL | WS_BORDER,
+    hList = child('LISTBOX', '', CHILD | ListBoxStyle.HASSTRINGS | WindowStyle.VSCROLL | WindowStyle.BORDER,
         rightX, listY, rightW, rowY - gap - listY, 0)
 
     child('BUTTON', '添加文件(&A)', CHILD, PAD, rowY, ADD_W, CTRL_H, ID_ADD_FILE)
@@ -355,8 +342,8 @@ function openFilesDialog(): string[] {
             lpstrFile: fileBuf.ptr,
             nMaxFile: 16384,
             lpstrTitle: title.ptr,
-            Flags: OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST
-                | OFN_ALLOWMULTISELECT | OFN_EXPLORER,
+            Flags: OpenFileNameFlag.HIDEREADONLY | OpenFileNameFlag.PATHMUSTEXIST | OpenFileNameFlag.FILEMUSTEXIST
+                | OpenFileNameFlag.ALLOWMULTISELECT | OpenFileNameFlag.EXPLORER,
         })
         if (!GetOpenFileName(ofn.ptr)) return []
         const strs = new TextDecoder('utf-16le')
@@ -440,7 +427,7 @@ gui.RegisterClass('lanfile_Main', (hwnd: any, msg: number, wParam: number, lPara
         else if (id === ID_CTXMENU) toggleCtx()   // AUTOCHECKBOX 已翻好勾选态
         return 0
     }
-    if (msg === WM_COPYDATA) {
+    if (msg === WmMsg.COPYDATA) {
         recvCopyData(lParam)
         return 1
     }

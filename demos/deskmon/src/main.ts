@@ -41,7 +41,7 @@ import { ShellNotifyIcon } from 'quickwin/lib/windows/shell32.js'
 import { RECT, PAINTSTRUCT, LOGFONTW, SIZE, POINT, NOTIFYICONDATAW } from 'quickwin/lib/windows/structs.js'
 import { RegCloseKey, RegCreateKeyEx, RegOpenKeyEx, RegQueryValueEx, RegSetValueEx } from 'quickwin/lib/windows/advapi32.js'
 import { ICON_NET_B64, ICON_MEM_B64, ICON_CPU_B64 } from './icons.js'
-import { BackgroundMode, DeviceCap, GetWindowCmd, Gwlp, HKey, IDI, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosFlag, SetWindowPosHwnd, ShowWindowCmd, TrackPopupMenuFlag, WindowStyle, WmMsg } from 'quickwin/constants'
+import { BackgroundMode, DeviceCap, DtFlag, GetWindowCmd, Gwlp, HKey, HitTest, IDI, IfType, ImageType, LoadImageFlag, NotifyIconCmd, NotifyIconFlag, RegAccess, RegType, SetWindowPosFlag, SetWindowPosHwnd, ShowWindowCmd, Spi, TrackPopupMenuFlag, WindowStyle, WmMsg } from 'quickwin/constants'
 
 // ── setTimeout 桥接：os 事件循环已与 gui 消息泵集成（quickjs-libc 消息泵里 poll 定时器）──
 // 本项目刻意不开 DOM lib，故这里补一条引擎全局的类型声明（同 quickwin/lib/polyfill.js 里的声明；
@@ -58,13 +58,6 @@ if (typeof (globalThis as any).setTimeout === 'undefined') {
 // Win32 枚举（WindowStyle/WmMsg/NotifyIconCmd/...）import 自 quickwin/constants（真 .ts），
 // 由 esbuild 在 bundle 时内联为数字字面量
 const WM_TRAY = 0x8001          // 托盘回调消息（自定义）
-const WM_NCHITTEST = 0x0084
-const WM_PAINT = 0x000F
-const WM_ERASEBKGND = 0x0014
-const HTCAPTION = 2             // 整窗返回此命中码 = 系统级窗口拖动
-const GWL_EXSTYLE = -20         // Gwlp 枚举无 EXSTYLE → 字面量绕过枚举域
-const WS_EX_LAYERED = 0x00080000
-const WS_EX_TOOLWINDOW = 0x00000080   // 工具窗口：任务栏不显示按钮、Alt+Tab 不列出（常驻入口只留托盘）
 const LWA_ALPHA = 0x2           // SetLayeredWindowAttributes 用全局 alpha（非色键）
 const ALPHA = 130               // 不透明度 0-255（≈51%：更强挂件感，白字仍可读）
 // 背景主题（COLORREF 0x00BBGGRR）：深色为默认；浅色必须连文字一起翻转，否则白底白字不可读。
@@ -75,9 +68,6 @@ const THEME = [
 ]
 let bgLight = false              // 当前浅色与否：启动从 cfg 恢复，托盘菜单切换
 let colorText = THEME[0].text    // 文字色随主题；paint 每帧读
-const DT_FLAGS = 0x00000824     // DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX；DT_VCENTER 无 SINGLELINE 时被 MS 忽略→顶对齐
-const SPI_GETWORKAREA = 0x0030  // 工作区（不含任务栏）——悬浮窗贴任务栏上沿
-const IF_TYPE_SOFTWARE_LOOPBACK = 24   // 注意：6 = IF_TYPE_ETHERNET_CSMACD（以太网），别搞混
 const NET_RESET_BPS = 5e8       // 聚合增量换算 > 500MB/s：计数器重置/网卡重枚举，按 0 处理
 const TICK_MS = 1000
 // ── 大小档：BASE_* 为 100% 基准，MON_* 等由 applyScale 按档位派生 ──
@@ -231,7 +221,7 @@ function sampleNet(): [number, number] | null {
     let inSum = 0, outSum = 0
     for (let r = 0; r < n; r++) {
         const off = 4 + r * IFROW_SIZE
-        if (dv.getUint32(off + IFROW_OFF_TYPE, true) === IF_TYPE_SOFTWARE_LOOPBACK) continue
+        if (dv.getUint32(off + IFROW_OFF_TYPE, true) === IfType.SOFTWARE_LOOPBACK) continue
         // 不按 operStatus 过滤：Dormant(5) 等低功耗态接口同样承载流量（win7 NAT 网卡实测 Dormant）
         inSum += dv.getUint32(off + IFROW_OFF_IN, true)
         outSum += dv.getUint32(off + IFROW_OFF_OUT, true)
@@ -475,10 +465,10 @@ let autostart = autostartGet()   // 菜单打勾状态；外部改了注册表�
 
 gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number) => {
     if (!hwnd) return gui.DefWindowProc(hwnd, msg, _w, lParam)
-    if (msg === WM_NCHITTEST) return HTCAPTION
+    if (msg === WmMsg.NCHITTEST) return HitTest.CAPTION
     // 自绘窗口：RoundRect 底色+描边擦除 → DrawText；erase=false 时不发本消息
-    if (msg === WM_ERASEBKGND) return 1
-    if (msg === WM_PAINT) {
+    if (msg === WmMsg.ERASEBKGND) return 1
+    if (msg === WmMsg.PAINT) {
         try {
             // 出参/未注册位只收 .ptr 品牌指针（整 buffer 走 unknown layout fail-fast）
             const hdc = BeginPaint(hwnd, paintBuf.ptr)
@@ -512,7 +502,7 @@ gui.RegisterClass('DeskMon', (hwnd: any, msg: number, _w: number, lParam: number
                     const t = segTexts[i]
                     if (!t) continue
                     const r = RECT.encode({ left: x, top: 0, right: MON_W, bottom: MON_H })
-                    DrawText(hdc, t, -1, r.ptr, DT_FLAGS)
+                    DrawText(hdc, t, -1, r.ptr, DtFlag.SINGLELINE | DtFlag.VCENTER | DtFlag.NOPREFIX)
                     if (GetTextExtentPoint32(hdc, t, t.length, sz.ptr)) {
                         const d: any = SIZE.decode(sz)
                         x += d.cx + SEG_GAP
@@ -604,7 +594,7 @@ if (cfgData.bg === 1) setBg(true)   // 恢复浅色主题（启动恢复不回�
 
 // 工作区右下角（任务栏上沿）落位；上次拖动位置与工作区相交可见则恢复
 const wa: any = RECT.alloc()
-SystemParametersInfo(SPI_GETWORKAREA, 0, wa.ptr, 0)
+SystemParametersInfo(Spi.GETWORKAREA, 0, wa.ptr, 0)
 const work: any = RECT.decode(wa)
 let initX = (work.right || 1024) - MON_W - 8
 let initY = (work.bottom || 768) - MON_H - 40   // 默认稍抬高：距任务栏上沿 40px
@@ -624,8 +614,8 @@ hwndMain = gui.CreateWindow(
 if (!hwndMain) std.exit(1)
 
 // 半透明 + 免任务栏按钮：EX 风格 CreateWindow 不带 → 事后补位（MSDN 支持的用法）
-const exStyle = GetWindowLongPtr(hwndMain, GWL_EXSTYLE as unknown as Gwlp)
-SetWindowLongPtr(hwndMain, GWL_EXSTYLE as unknown as Gwlp, exStyle | WS_EX_LAYERED | WS_EX_TOOLWINDOW)
+const exStyle = GetWindowLongPtr(hwndMain, Gwlp.EXSTYLE as unknown as Gwlp)
+SetWindowLongPtr(hwndMain, Gwlp.EXSTYLE as unknown as Gwlp, exStyle | WindowStyle.LAYERED | WindowStyle.TOOLWINDOW)
 SetLayeredWindowAttributes(hwndMain, 0, ALPHA, LWA_ALPHA)
 // 圆角 region：显示前设好（显示瞬间已是圆角；region 对象系统接管）
 SetWindowRgn(hwndMain, CreateRoundRectRgn(0, 0, MON_W, MON_H, RGN_RADIUS, RGN_RADIUS), 1)

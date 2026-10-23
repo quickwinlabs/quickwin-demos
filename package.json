@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "lean-qr": "^2.7.4",
-    "quickwin": "^3.2.0"
+    "quickwin": "^3.2.1"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",

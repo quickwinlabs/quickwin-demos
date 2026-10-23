@@ -11,14 +11,8 @@ import {
     CreateDirectory, DeleteFile, FindFirstFile, FindNextFile, FindClose,
 } from 'quickwin/lib/windows/kernel32.js'
 import { WIN32_FIND_DATAW } from 'quickwin/lib/windows/structs.js'
-import { FileCreation, FileSeekFrom } from 'quickwin/constants'
+import { FileAccess, FileAttribute, FileCreation, FileSeekFrom, FileShare } from 'quickwin/constants'
 
-const GENERIC_READ = 0x80000000
-const GENERIC_WRITE = 0x40000000
-const FILE_SHARE_READ = 0x1
-const FILE_SHARE_WRITE = 0x2
-const FILE_ATTRIBUTE_NORMAL = 0x80
-const FILE_ATTRIBUTE_DIRECTORY = 0x10
 const INVALID = 0xFFFFFFFF
 
 const readOut = new PtrArrayBuffer(4)
@@ -36,15 +30,15 @@ export interface Entry {
 
 /** 打开读；失败 → null */
 export function openRead(path: string): any {
-    const h = CreateFile(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-        FileCreation.OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)
+    const h = CreateFile(path, FileAccess.GENERIC_READ, FileShare.READ | FileShare.WRITE, NULL,
+        FileCreation.OPEN_EXISTING, FileAttribute.NORMAL, NULL)
     return bad(h) ? null : h
 }
 
 /** 打开写（覆盖）；失败 → null */
 export function openWrite(path: string): any {
-    const h = CreateFile(path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-        FileCreation.CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)
+    const h = CreateFile(path, FileAccess.GENERIC_WRITE, FileShare.READ, NULL,
+        FileCreation.CREATE_ALWAYS, FileAttribute.NORMAL, NULL)
     return bad(h) ? null : h
 }
 
@@ -80,7 +74,7 @@ export function stat(path: string): Entry | null {
     return {
         name: f.cFileName as string,
         size: f.nFileSizeLow + f.nFileSizeHigh * 4294967296,
-        isDir: (attrs & FILE_ATTRIBUTE_DIRECTORY) !== 0,
+        isDir: (attrs & FileAttribute.DIRECTORY) !== 0,
     }
 }
 
@@ -98,7 +92,7 @@ export function listDir(dir: string): Entry[] {
                 out.push({
                     name,
                     size: f.nFileSizeLow + f.nFileSizeHigh * 4294967296,
-                    isDir: (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) !== 0,
+                    isDir: (f.dwFileAttributes & FileAttribute.DIRECTORY) !== 0,
                 })
             }
             if (!FindNextFile(h, fd.ptr)) break
