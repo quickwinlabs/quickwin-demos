@@ -24,8 +24,11 @@
 // 4. 防火墙：Windows 默认拦入站，手机打不开时程序内没有任何线索。启动后查
 //    INetFwPolicy2（quickwin/lib/netfw），被拦且无本 exe 规则时提示一键放行
 //    （提权 netsh 加规则后轮询复查）。XP 无该接口，静默跳过。
+// 5. 状态持久化：%TEMP%\lanfile.json 存右键菜单开关、选中的网卡地址、上传目录。
+//    网卡存地址不存下标——GetAdaptersInfo 枚举顺序不跨重启稳定（VPN 接入/网卡增删
+//    会让下标指向另一张卡），存地址自愈合，地址已不存在时回落内核路由主卡。
 //
-// DPI：布局全用基准像素（520×360 体系）——react-qw 的 flex 定位与控件创建统一乘
+// DPI：布局全用基准像素（400×360 体系）——react-qw 的 flex 定位与控件创建统一乘
 // scaleFactor；窗口尺寸（CreateWindow）与 GDI 绘制自己乘 S。不做 WM_DPICHANGED 跨屏
 // 动态（跨屏拖动罕见，重启自适应）。
 //
@@ -40,10 +43,10 @@ import type { HWND } from 'gui'   // gui 与 ffi 的 <HWND>ptr 品牌同型，�
 import * as os from 'os'
 import * as std from 'std'
 import * as ffi from 'ffi'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { bind, WCHAR } from 'quickwin/lib/ffi/bind.js'
 import { NULL, PtrArrayBuffer, type Ptr } from 'quickwin/lib/ffi/ctype.js'
-import { Button, CheckBox, Input, ListBox, render } from 'quickwin/lib/react-qw/index.js'
+import { Button, CheckBox, ComboBox, ListBox, PathPicker, render } from 'quickwin/lib/react-qw/index.js'
 import { forceFlexLayout } from 'quickwin/lib/react-qw/reconciler.js'
 import {
     BeginPaint, EndPaint, FillRect, FindWindow, GetClientRect, InvalidateRect, IsIconic,
@@ -67,21 +70,21 @@ import * as shares from './shares.js'
 import * as netif from './netif.js'
 import * as ctxmenu from './ctxmenu.js'
 import { makeQr, type QrImage } from './qrcode.js'
-import { setUploadDir, startServer } from './server.js'
+import { setUploadDir as setServerDir, startServer } from './server.js'
 
 const COPYDATA_MAGIC = 0x1A6F1EC   // WM_COPYDATA dwData 自定义魔数（lanfile 的 leet 拼写）
 
 // ── 布局（基准像素；flex 样式由 reconciler 乘 scaleFactor，GDI 处自己乘 S）──
 const S = getScaleFactor()
-const WIN_W = Math.round(520 * S)
+const WIN_W = Math.round(400 * S)
 const WIN_H = Math.round(360 * S)
 const PAD = 12
 const GAP = 6
 const CTRL_H = 26
 const QR_W = 176      // 左侧 QR 面板宽
-const CHK_W = 94      // ☑右键菜单（含勾选块 + 文字 + 边距）
-const ADD_W = 84      // 添加文件
-const OPEN_W = 68     // 打开上传目录
+const CHK_W = 80      // ☑右键菜单（含勾选块 + 文字 + 边距）
+const ADD_W = 66      // 添加文件
+const OPEN_W = 52     // 打开
 const TIP_H = 20
 const TIP_X = 10
 const TIP_DY = 3
@@ -103,8 +106,13 @@ function log(msg: string) {
     } catch { /* 日志失败不影响主体 */ }
 }
 
-// ── 配置：%TEMP%\lanfile.json，目前只有 { "ctx": 0|1 }（右键菜单开关；缺省=开）──
-type Cfg = { ctx?: number }
+// ── 配置：%TEMP%\lanfile.json：
+//   { "ctx": 0|1 }         右键菜单开关（缺省=开）
+//   { "addr": "192.168.." } 用户选中的网卡地址。存地址不存下标：GetAdaptersInfo 的枚举
+//                          顺序不跨重启稳定，VPN 接入/网卡增删会让下标指向另一张卡；
+//                          地址已不存在时回落内核路由主卡
+//   { "uploads": "D:\\..\\uploads" } 上传保存目录（缺省=exe 同级 uploads）
+type Cfg = { ctx?: number, addr?: string, uploads?: string }
 function cfgPath(): string | null {
     const dir = std.getenv('TEMP')
     return dir ? dir.replace(/[\\/]+$/, '') + '\\lanfile.json' : null
@@ -116,7 +124,11 @@ function loadCfg(): Cfg {
         const txt = std.loadFile(p)
         if (!txt) return {}
         const v = JSON.parse(txt)
-        return typeof v?.ctx === 'number' ? { ctx: v.ctx } : {}
+        const out: Cfg = {}
+        if (typeof v?.ctx === 'number') out.ctx = v.ctx
+        if (typeof v?.addr === 'string') out.addr = v.addr
+        if (typeof v?.uploads === 'string') out.uploads = v.uploads
+        return out
     } catch { return {} }
 }
 function saveCfg(c: Cfg): void {
@@ -178,7 +190,6 @@ function forwardPath(hwnd: HWND, path: string | null): boolean {
 // ── 启动期算好的初始值（组件以它们为初始 state）──
 let hwndMain: HWND | null = null
 let uploadAbs = ''
-let addrText = ''
 let shareItems: string[] = []
 let ctxOn = false
 let cfg: Cfg = {}
@@ -228,6 +239,16 @@ function fillWhite(hdc: Ptr<'HDC'>, w: number, h: number): void {
 // 位图按 1px/模块保存，贴图时再放大 cell 倍，避免按显示尺寸存大图。
 // cell 从面板的设备像素宽度推（(QR_W - 2*PAD) * S），高 DPI 下 QR 随面板等比放大。
 interface QrDraw { bmp: Ptr<'HGDIOBJ'>; px: number }   // px = 设备像素
+
+/** 生成失败返回 null（QrView 会显示"请用手机输入地址"提示） */
+function makeQrSafe(text: string): QrImage | null {
+    try {
+        return makeQr(text)
+    } catch (e) {
+        log('qr failed: ' + e)
+        return null
+    }
+}
 
 function buildQrDraw(qr: QrImage): QrDraw | null {
     const cell = Math.max(2, Math.floor((QR_W - PAD * 2) * S / qr.width))
@@ -432,10 +453,40 @@ function checkFirewall(exe: string): void {
 }
 
 // ── 界面 ──
-function App({ qr }: { qr: QrImage | null }) {
-    const [addr, setAddr] = useState(addrText)
+function App({ addrs, initIdx, port, uploadDir }: {
+    addrs: string[]; initIdx: number; port: number; uploadDir: string
+}) {
+    const [idx, setIdx] = useState(initIdx)
     const [items, setItems] = useState<string[]>(shareItems)
     const [ctx, setCtx] = useState(ctxOn)
+    const [upDir, setUpDir] = useState(uploadDir)
+
+    // 下拉项 = 完整 URL（手机要输的就是它）。memo 保持数组引用稳定：ComboBox 的
+    // effect 以 [items] 为依赖，每次渲染传新数组会让它 RESETCONTENT 重灌一遍
+    const urls = useMemo(() => addrs.map((ip) => 'http://' + ip + ':' + port + '/'),
+        [addrs, port])
+    // 选中项同时是地址显示与 QR 源，不可能漂移；idx 越界收敛（防御性，列表不应缩短）
+    const clamped = Math.min(idx, addrs.length - 1)
+    const url = urls[clamped] ?? ''
+    const qr = useMemo(() => makeQrSafe(url), [url])
+
+    // 换网卡：地址写回 lanfile.json（存地址不存下标，见 Cfg 注释）
+    const onAddr = (i: number): void => {
+        if (i < 0 || i >= addrs.length) return
+        setIdx(i)
+        cfg.addr = addrs[i]
+        saveCfg(cfg)
+        log('addr -> ' + addrs[i])
+    }
+    // 换上传目录：server 立刻改走新目录（mkdirs 幂等），配置与 UI 同步
+    const onUpDir = (d: string): void => {
+        if (!d) return
+        setServerDir(d)      // server：HTTP 立刻生效
+        uploadAbs = d
+        cfg.uploads = d
+        saveCfg(cfg)
+        setUpDir(d)          // React：PathPicker 靠 key=upDir remount 换值
+    }
 
     useEffect(() => {
         setItems(itemsOf())               // 对齐 render 前到达的 COPYDATA
@@ -446,12 +497,13 @@ function App({ qr }: { qr: QrImage | null }) {
       <w type="STATIC"
          ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
          style={{ flexDirection: 'column', padding: PAD, gap: GAP, flexGrow: 1 }}>
-        {/* 行1：地址栏 + ☑右键菜单 */}
+        {/* 行1：地址（网卡下拉，选中项即地址与 QR 源）+ ☑右键菜单 */}
         <w type="STATIC"
            ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
            style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
-          <Input readonly value={addr} style={{ flexGrow: 1, height: CTRL_H }} />
-          <CheckBox label='右键菜单(&M)' checked={ctx}
+          <ComboBox items={urls} selectedIndex={clamped} onChange={onAddr}
+                    style={{ flexGrow: 1, height: CTRL_H }} />
+          <CheckBox label='右键菜单' checked={ctx}
                     onChange={(v) => { if (toggleCtx(v)) setCtx(v) }}
                     style={{ width: CHK_W, height: CTRL_H }} />
         </w>
@@ -462,14 +514,14 @@ function App({ qr }: { qr: QrImage | null }) {
           <QrView qr={qr} />
           <ListBox items={items} style={{ flexGrow: 1 }} />
         </w>
-        {/* 行3：添加文件 / 上传保存路径 / 打开上传目录 */}
+        {/* 行3：添加文件 / 上传保存目录（PathPicker 选目录）/ 打开目录 */}
         <w type="STATIC"
            ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
            style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
-          <Button onClick={addFiles} style={{ width: ADD_W, height: CTRL_H }}>添加文件(&A)</Button>
-          <w type="STATIC" text={'上传保存: ' + uploadAbs} ws={WindowStyle.VISIBLE}
-             style={{ flexGrow: 1, height: CTRL_H }} />
-          <Button onClick={openUploadDir} style={{ width: OPEN_W, height: CTRL_H }}>打开(&O)</Button>
+          <Button onClick={addFiles} style={{ width: ADD_W, height: CTRL_H }}>添加文件</Button>
+          <PathPicker key={upDir} type="folder" value={upDir} onChange={onUpDir}
+                      title='选择上传保存目录' style={{ flexGrow: 1, height: CTRL_H }} />
+          <Button onClick={openUploadDir} style={{ width: OPEN_W, height: CTRL_H }}>打开</Button>
         </w>
       </w>
     )
@@ -531,8 +583,11 @@ function main(): void {
         std.exit(1)
     }
     const exe = ctxmenu.exePath()
-    uploadAbs = exe.slice(0, exe.lastIndexOf('\\')) + '\\uploads'
-    setUploadDir(uploadAbs)
+    // 上传目录：配置里有就用（上次选过），否则 exe 同级 uploads
+    uploadAbs = (cfg.uploads && cfg.uploads.length > 0)
+        ? cfg.uploads
+        : exe.slice(0, exe.lastIndexOf('\\')) + '\\uploads'
+    setServerDir(uploadAbs)
     ctxOn = cfg.ctx !== 0          // 右键菜单默认开；注册表与勾选框一起反映
     ctxmenu.setEnabled(ctxOn)
 
@@ -548,17 +603,11 @@ function main(): void {
         MessageBox(hwndMain, '端口监听失败：' + String(e), 'lanfile', 0)
         std.exit(1)
     }
+    // 初始网卡下标：配置里选过且仍在列表里 → 用它；否则内核路由主卡
     const lan = netif.lanAddresses()
-    const primary = lan.primary
-    addrText = 'http://' + primary + ':' + port + '/'
-        + (fallback ? '   （默认端口被占，已改用随机端口）' : '')
-    let qr: QrImage | null = null
-    try {
-        qr = makeQr('http://' + primary + ':' + port + '/')
-    } catch (e) {
-        log('qr failed: ' + e)
-    }
-    log('server: ' + primary + ':' + port + ' fallback=' + fallback
+    const savedIdx = lan.all.indexOf(cfg.addr ?? '')
+    const initIdx = savedIdx >= 0 ? savedIdx : Math.max(0, lan.all.indexOf(lan.primary))
+    log('server: ' + lan.all[initIdx] + ':' + port + ' fallback=' + fallback
         + ' addrs=' + lan.all.join(','))
 
     // 4. argv 文件入表（render 之前，作为初始列表）
@@ -566,11 +615,12 @@ function main(): void {
     shareItems = itemsOf()
 
     // 5. 渲染 + 显示
-    render(<App qr={qr} />, hwndMain)
+    render(<App addrs={lan.all} initIdx={initIdx} port={port}
+                uploadDir={uploadAbs} />, hwndMain)
     SetWindowPos(hwndMain, SetWindowPosHwnd.TOP, 0, 0, 0, 0,
         SetWindowPosFlag.SWP_NOMOVE | SetWindowPosFlag.SWP_NOSIZE)
     ShowWindow(hwndMain, ShowWindowCmd.SHOWNORMAL)
-    print('lanfile: http://' + primary + ':' + port + '/ uploads=' + uploadAbs)
+    print('lanfile: http://' + lan.all[initIdx] + ':' + port + '/ uploads=' + uploadAbs)
 
     // 6. 防火墙：窗口显示后再提示，避免模态框挂在不可见窗口上
     checkFirewall(exe)

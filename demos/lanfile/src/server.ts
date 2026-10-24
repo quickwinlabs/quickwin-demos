@@ -16,7 +16,8 @@ import * as wfile from './wfile.js'
 
 const CHUNK = 65536
 
-export let uploadDir = ''   // main.ts 启动时 setUploadDir 注入（exe 同级 uploads）
+export let uploadDir = ''   // 启动时 setUploadDir 注入（配置里的 uploads，缺省 exe 同级）；
+                            // UI 上换目录也会再次注入，server 立即改走新目录
 
 export function setUploadDir(dir: string): void {
     uploadDir = dir
