@@ -75,6 +75,9 @@
     <li><b>路径安全：</b>上传名做 basename 归一化并拒绝绝对路径与 <code>..</code>，
         越出 <code>uploads\</code> 的请求返回 <code>400</code>。</li>
     <li><b>无托盘：</b>关窗即退出，不常驻后台。</li>
+    <li><b>防火墙：</b>启动时检测 Windows 防火墙状态；开着但还没有本程序的入站规则时，
+        提示一键放行（UAC 确认后自动添加，可随时在「允许应用通过防火墙」里删除）。
+        Windows XP 没有这个接口，只能跳过。</li>
     <li><b>配置：</b>只存一个开关（右键菜单），写在 <code>%TEMP%\lanfile.json</code>。</li>
   </ul>
 

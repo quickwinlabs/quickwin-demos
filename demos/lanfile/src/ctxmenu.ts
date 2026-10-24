@@ -30,11 +30,11 @@ const BASES = [
 /** 当前进程 exe 完整路径；失败 → ''（lib GetModuleFileName + WCHAR 编解码） */
 export function exePath(): string {
     const buf = WCHAR.alloc(520)
-    return GetModuleFileName(NULL as any, buf as any, 520) > 0 ? WCHAR.decode(buf) : ''
+    return GetModuleFileName(NULL, buf, 520) > 0 ? WCHAR.decode(buf) : ''
 }
 
 /** JS 字符串 → UTF-16LE（含结尾 NUL）缓冲，照 deskmon/test_registry */
-function wbuf(s: string): any {
+function wbuf(s: string): PtrArrayBuffer<''> {
     const p = new PtrArrayBuffer((s.length + 1) * 2)
     const dv = new DataView(p)
     for (let i = 0; i <= s.length; i++) dv.setUint16(i * 2, s.charCodeAt(i), true)
@@ -74,8 +74,8 @@ function setVerb(base: string, exe: string): boolean {
 function clearVerb(base: string): void {
     try {
         // 先删子键 command 再删父键（XP 兼容的 RegDeleteKeyW 无递归能力）
-        RegDeleteKeyW(HKey.CURRENT_USER as any, base + '\\command')
-        RegDeleteKeyW(HKey.CURRENT_USER as any, base)
+        RegDeleteKeyW(HKey.CURRENT_USER, base + '\\command')
+        RegDeleteKeyW(HKey.CURRENT_USER, base)
     } catch { /* 已不存在视为达成 */ }
 }
 

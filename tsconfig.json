@@ -10,9 +10,14 @@
     // 运行时是 QuickJS（无 DOM）：标准库按引擎提供的能力取 ES2024（quickwin 包自己用 ES2025），
     // 刻意不开 DOM —— 否则 DOM 的 TextDecoder/TextEncoder 会撞包内 polyfill 的同名全局声明
     "lib": ["es2024"],
-    "types": ["quickwin"]
+    "types": ["quickwin"],
+    // react-qw 是 JSX 渲染到 HWND 的自定义 renderer：.tsx 走自动运行时（react/jsx-runtime），
+    // 与 esbuild 的 jsx:automatic 一致，两个工具各写一份
+    "jsx": "react-jsx",
+    "jsxImportSource": "react"
   },
   "include": [
-    "demos"
+    "demos",
+    "react-qw.d.ts"
   ]
 }

@@ -25,18 +25,18 @@ const GetAdaptersInfo = bind('iphlpapi.dll', 'GetAdaptersInfo', '<>ptr <>ptr -> 
 
 /** 默认路由网卡的本机 IPv4；无外网路由/失败 → null（connect 只做路由选定，不发包） */
 export function primaryByRoute(): string | null {
-    let s: any = null
+    let s: NonNullable<ReturnType<typeof sock.socket>> | null = null
     try {
         s = sock.socket()
-        if (s === null || (s as number) < 0) return null
-        if (sock.connect(s as any, '8.8.8.8', 53) !== 0) return null
-        const local = sock.getsockname(s as any)
+        if (s === null || s < 0) return null
+        if (sock.connect(s, '8.8.8.8', 53) !== 0) return null
+        const local = sock.getsockname(s)
         if (local && local.addr && local.addr !== '0.0.0.0') return local.addr
         return null
     } catch {
         return null
     } finally {
-        try { if (s !== null) sock.closesocket(s as any) } catch { /* 忽略 */ }
+        try { if (s !== null) sock.closesocket(s) } catch { /* 忽略 */ }
     }
 }
 
@@ -63,7 +63,7 @@ export function adapterIps(): string[] {
         const buf = new PtrArrayBuffer(16384)
         const size = new PtrArrayBuffer(4)
         new DataView(size).setUint32(0, 16384, true)
-        if (GetAdaptersInfo((buf as any).ptr, (size as any).ptr) !== 0) return out
+        if (GetAdaptersInfo(buf.ptr, size.ptr) !== 0) return out
         const dv = new DataView(buf)
         const P = os.arch !== 'ia32' ? 8 : 4
         const readPtr = (off: number): number =>
@@ -79,11 +79,11 @@ export function adapterIps(): string[] {
                 if (keepIp(ip) && out.indexOf(ip) < 0) out.push(ip)
                 const next = readPtr(ipNode)
                 if (!next) break
-                ipNode = next - (buf as any).ptr   // Next 是绝对地址 → 缓冲内偏移
+                ipNode = next - buf.ptr   // Next 是绝对地址 → 缓冲内偏移
             }
             const nextAdapter = readPtr(node)
             if (!nextAdapter) break
-            node = nextAdapter - (buf as any).ptr
+            node = nextAdapter - buf.ptr
         }
     } catch { /* 取不到 → 空 */ }
     return out

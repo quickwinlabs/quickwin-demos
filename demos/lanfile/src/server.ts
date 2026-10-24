@@ -207,7 +207,7 @@ function download(id: number, range: string | null, headOnly: boolean): Response
             // n < want 时按实际读取数截断（尾块）
             controller.enqueue(n === want
                 ? new Uint8Array(buf)
-                : new Uint8Array((buf as ArrayBuffer).slice(0, n)))
+                : new Uint8Array(buf.slice(0, n)))
         },
         cancel() {
             if (!closed) {

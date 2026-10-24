@@ -15,10 +15,14 @@ import { FileAccess, FileAttribute, FileCreation, FileSeekFrom, FileShare } from
 
 const INVALID = 0xFFFFFFFF
 
+/** CreateFile 返回的句柄品牌；ReadFile/WriteFile/SetFilePointer 同号收 */
+type HFile = ReturnType<typeof CreateFile>
+
 const readOut = new PtrArrayBuffer(4)
 const writeOut = new PtrArrayBuffer(4)
 
-function bad(h: any): boolean {
+// 不绑具体品牌：INVALID_HANDLE_VALUE / -1 的判断与句柄种类无关，HFile、HFIND 通用
+function bad(h: number): boolean {
     return !h || h === -1 || (h >>> 0) === INVALID
 }
 
@@ -29,37 +33,37 @@ export interface Entry {
 }
 
 /** 打开读；失败 → null */
-export function openRead(path: string): any {
+export function openRead(path: string): HFile | null {
     const h = CreateFile(path, FileAccess.GENERIC_READ, FileShare.READ | FileShare.WRITE, NULL,
         FileCreation.OPEN_EXISTING, FileAttribute.NORMAL, NULL)
     return bad(h) ? null : h
 }
 
 /** 打开写（覆盖）；失败 → null */
-export function openWrite(path: string): any {
+export function openWrite(path: string): HFile | null {
     const h = CreateFile(path, FileAccess.GENERIC_WRITE, FileShare.READ, NULL,
         FileCreation.CREATE_ALWAYS, FileAttribute.NORMAL, NULL)
     return bad(h) ? null : h
 }
 
 /** 读至多 len 字节到 buf；返回实际字节数，失败 -1，EOF 0 */
-export function read(h: any, buf: PtrArrayBuffer, len: number): number {
+export function read(h: HFile, buf: PtrArrayBuffer, len: number): number {
     if (!ReadFile(h, buf, len, readOut, NULL)) return -1
     return new DataView(readOut).getUint32(0, true)
 }
 
 /** 写 buf 前 len 字节；返回实际写入数，失败 -1 */
-export function write(h: any, buf: PtrArrayBuffer, len: number): number {
+export function write(h: HFile, buf: PtrArrayBuffer, len: number): number {
     if (!WriteFile(h, buf, len, writeOut, NULL)) return -1
     return new DataView(writeOut).getUint32(0, true)
 }
 
 /** 绝对定位到 offset（文件头起） */
-export function seek(h: any, offset: number): void {
+export function seek(h: HFile, offset: number): void {
     SetFilePointer(h, offset, NULL, FileSeekFrom.BEGIN)
 }
 
-export function close(h: any): void {
+export function close(h: HFile): void {
     CloseHandle(h)
 }
 
@@ -68,11 +72,11 @@ export function stat(path: string): Entry | null {
     const fd = WIN32_FIND_DATAW.alloc()
     const h = FindFirstFile(path, fd.ptr)
     if (bad(h)) return null
-    const f = WIN32_FIND_DATAW.decode(fd) as any
+    const f = WIN32_FIND_DATAW.decode(fd)
     FindClose(h)
-    const attrs = f.dwFileAttributes as number
+    const attrs = f.dwFileAttributes
     return {
-        name: f.cFileName as string,
+        name: f.cFileName,
         size: f.nFileSizeLow + f.nFileSizeHigh * 4294967296,
         isDir: (attrs & FileAttribute.DIRECTORY) !== 0,
     }
@@ -86,8 +90,8 @@ export function listDir(dir: string): Entry[] {
     const out: Entry[] = []
     try {
         for (;;) {
-            const f = WIN32_FIND_DATAW.decode(fd) as any
-            const name = f.cFileName as string
+            const f = WIN32_FIND_DATAW.decode(fd)
+            const name = f.cFileName
             if (name !== '.' && name !== '..') {
                 out.push({
                     name,

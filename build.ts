@@ -1,7 +1,7 @@
 // 构建链：多 demo 版（唯一入口：npm run build = tsc && node build.ts）
 //   类型检查交给 npm 脚本里的 tsc（tsconfig.json 已 noEmit，不产出任何 JS）：
 //   覆盖 demos/ 全部 .ts，报错即中止；本脚本只做打包与产物组装：
-//   stage 1: esbuild —— 直接 bundle demos/*/src/main.ts 成自包含 ESM 单文件（gui/std/os/ffi
+//   stage 1: esbuild —— 直接 bundle demos/*/src/main.{ts,tsx} 成自包含 ESM 单文件（gui/std/os/ffi
 //            等运行时模块 external）。const enum 内联由 esbuild 自己完成（constants.ts 是
 //            真 .ts 源，≥0.21 可见定义即内联为字面量），无需 tsc emit 中转。
 //   stage 2: embed —— brotli 压缩后追加进 exe 尾部（[exe][js][u32 len]["QWBR"]，
@@ -22,20 +22,25 @@
 //         screenshots/*.png             ← 从 demos/<name>/screenshots/ 复制
 //       <name>.exe                      ← 从 dist/<name>.exe 复制
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, copyFileSync, cpSync, statSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { dirname, join, basename } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { brotliCompressSync, constants as zc } from 'node:zlib'
 import { build } from 'esbuild'
 import { Data, NtExecutable, NtExecutableResource, Resource } from 'resedit'
 
 // ── 枚举 demos ──
+// 本脚本目录（alias 需要绝对路径：esbuild 把 alias 值当模块名解析，相对路径无效）
+const ROOT = dirname(fileURLToPath(import.meta.url))
 const DEMOS_DIR = 'demos'
 if (!existsSync(DEMOS_DIR)) {
     console.error(`no ${DEMOS_DIR}/ directory`)
     process.exit(1)
 }
+// 入口可以是 .ts 或 .tsx（用 react-qw 写 JSX 的 demo 用 .tsx）
+const ENTRY = ['main.ts', 'main.tsx']
 const demos = readdirSync(DEMOS_DIR).filter((n) => {
     const p = join(DEMOS_DIR, n)
-    return statSync(p).isDirectory() && existsSync(join(p, 'src', 'main.ts'))
+    return statSync(p).isDirectory() && ENTRY.some((f) => existsSync(join(p, 'src', f)))
 })
 if (demos.length === 0) {
     console.error(`no demos found under ${DEMOS_DIR}/*/src/main.ts`)
@@ -51,8 +56,8 @@ rmSync('dist', { recursive: true, force: true })
 mkdirSync('dist', { recursive: true })
 
 for (const d of demos) {
-    // 直接从 .ts 源打包（esbuild 原生支持 TS；const enum 内联、.js→.ts 回退解析都由它完成）
-    const entryTs = join(DEMOS_DIR, d, 'src', 'main.ts')
+    // 直接从 .ts/.tsx 源打包（esbuild 原生支持 TS；const enum 内联、.js→.ts 回退解析都由它完成）
+    const entryTs = join(DEMOS_DIR, d, 'src', ENTRY.find((f) => existsSync(join(DEMOS_DIR, d, 'src', f)))!)
     const jsOut = join('dist', `${d}.js`)
     const exeOut = join('dist', `${d}.exe`)
     const result = await build({
@@ -64,6 +69,23 @@ for (const d of demos) {
         target: 'es2020',
         legalComments: 'none',
         write: false,
+        // react-qw：JSX 走自动运行时（.tsx 入口）
+        jsx: 'automatic',
+        jsxImportSource: 'react',
+        // lib/react-qw 里 `declare const DEBUG` 的分支由这里替换，不定义会在首次 render 抛 ReferenceError
+        define: { DEBUG: 'false' },
+        // 定时器 shim：react 调度器在模块初始化时就抓 `typeof setTimeout`，而它在产物里排在
+        // lib/polyfill.js 之前（模块顺序不受入口 import 顺序控制）—— 抓到 null，首次 commit 抛错
+        // 被 reconciler 的错误边界吞掉，表现为「窗口开了但一个子窗都不建」。详见 shims/timer-shim.ts
+        inject: ['./shims/timer-shim.ts'],
+        // node_modules/quickwin 是软链到主仓工作树，其 lib 内的裸导入 'react' 按 realpath 解析到
+        // 主仓 node_modules，而本仓入口解析到 demo.d 自己的 —— esbuild 会各打一份进产物，
+        // 两份 React 的 dispatcher 互不相通，首次 render 抛 `cannot read property 'useState' of null`。
+        // alias 把所有 'react' 统一指向本仓 package.json 里装的那一份。
+        alias: { react: join(ROOT, 'node_modules', 'react') },
+        // 必须开：esbuild 只在 minify 时才取 react/react-reconciler 的 production 变体
+        // （不开是 874 KB raw / 114 KB brotli，生产变体 182 KB / 51 KB）
+        minify: true,
     })
     const jsBytes = result.outputFiles![0].contents
     writeFileSync(jsOut, jsBytes)
