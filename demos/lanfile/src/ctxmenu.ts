@@ -21,7 +21,7 @@ import { HKey, RegAccess, RegType } from 'quickwin/constants'
 
 const RegDeleteKeyW = bind('advapi32.dll', 'RegDeleteKeyW', '<>ptr <WCHAR>ptr -> i32')
 
-const MENU_TEXT = '发送到 lanfile'
+const MENU_TEXT = '通过 lanfile 分享'
 const BASES = [
     'Software\\Classes\\*\\shell\\lanfile',
     'Software\\Classes\\Directory\\shell\\lanfile',
