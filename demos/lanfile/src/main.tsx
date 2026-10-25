@@ -49,14 +49,17 @@ import { NULL, PtrArrayBuffer, type Ptr } from 'quickwin/lib/ffi/ctype.js'
 import { Button, CheckBox, ComboBox, ListBox, PathPicker, render } from 'quickwin/lib/react-qw/index.js'
 import { forceFlexLayout } from 'quickwin/lib/react-qw/reconciler.js'
 import {
-    BeginPaint, EndPaint, FillRect, FindWindow, GetClientRect, InvalidateRect, IsIconic,
-    MessageBox, PostQuitMessage, SendMessage, SetForegroundWindow, ShowWindow, SetWindowPos,
+    BeginPaint, CloseClipboard, EmptyClipboard, EndPaint, FillRect, FindWindow,
+    GetClientRect, InvalidateRect, IsIconic, MessageBox, OpenClipboard, PostQuitMessage,
+    SendMessage, SetClipboardData, SetForegroundWindow, ShowWindow, SetWindowPos,
 } from 'quickwin/lib/windows/user32.js'
 import {
     BitBlt, CreateBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject,
     SelectObject, SetBkMode, SetTextColor, TextOut,
 } from 'quickwin/lib/windows/gdi32.js'
-import { CreateMutex } from 'quickwin/lib/windows/kernel32.js'
+import {
+    CreateMutex, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, RtlMoveMemory,
+} from 'quickwin/lib/windows/kernel32.js'
 import { GetOpenFileName } from 'quickwin/lib/windows/comdlg32.js'
 import { ShellExecute } from 'quickwin/lib/windows/shell32.js'
 import { OPENFILENAMEW, PAINTSTRUCT, RECT } from 'quickwin/lib/windows/structs.js'
@@ -83,6 +86,7 @@ const GAP = 6
 const CTRL_H = 26
 const QR_W = 176      // 左侧 QR 面板宽
 const CHK_W = 80      // ☑右键菜单（含勾选块 + 文字 + 边距）
+const COPY_W = 52     // 复制 / 已复制
 const ADD_W = 66      // 添加文件
 const OPEN_W = 52     // 打开
 const TIP_H = 20
@@ -452,6 +456,23 @@ function checkFirewall(exe: string): void {
     }
 }
 
+// ── 剪贴板：CF_UNICODETEXT，GlobalAlloc 拿块 + RtlMoveMemory 灌数据（与 test_sysinfo 同款）──
+function copyText(text: string): boolean {
+    if (!OpenClipboard(NULL)) return false          // 别的进程占着剪贴板就放弃，不打扰用户
+    EmptyClipboard()
+    const src = WCHAR.encode(text)                  // 自带 NUL 终止
+    const hMem = GlobalAlloc(0x2 /* GMEM_MOVEABLE */, src.byteLength)
+    if (!hMem) { CloseClipboard(); return false }
+    const dst = GlobalLock(hMem)
+    if (!dst) { GlobalFree(hMem); CloseClipboard(); return false }
+    RtlMoveMemory(dst, src, src.byteLength)
+    GlobalUnlock(hMem)
+    const ok = SetClipboardData(13 /* CF_UNICODETEXT */, hMem) !== 0
+    if (!ok) GlobalFree(hMem)                       // 成功后所有权归系统，不能再释放
+    CloseClipboard()
+    return ok
+}
+
 // ── 界面 ──
 function App({ addrs, initIdx, port, uploadDir }: {
     addrs: string[]; initIdx: number; port: number; uploadDir: string
@@ -460,6 +481,7 @@ function App({ addrs, initIdx, port, uploadDir }: {
     const [items, setItems] = useState<string[]>(shareItems)
     const [ctx, setCtx] = useState(ctxOn)
     const [upDir, setUpDir] = useState(uploadDir)
+    const [copied, setCopied] = useState(false)
 
     // 下拉项 = 完整 URL（手机要输的就是它）。memo 保持数组引用稳定：ComboBox 的
     // effect 以 [items] 为依赖，每次渲染传新数组会让它 RESETCONTENT 重灌一遍
@@ -487,6 +509,12 @@ function App({ addrs, initIdx, port, uploadDir }: {
         saveCfg(cfg)
         setUpDir(d)          // React：PathPicker 靠 key=upDir remount 换值
     }
+    // 复制地址：剪贴板写入本身没有视觉反馈，按钮文字临时换成「已复制」再恢复
+    const onCopy = (): void => {
+        if (!url || !copyText(url)) return
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1200)
+    }
 
     useEffect(() => {
         setItems(itemsOf())               // 对齐 render 前到达的 COPYDATA
@@ -497,12 +525,15 @@ function App({ addrs, initIdx, port, uploadDir }: {
       <w type="STATIC"
          ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
          style={{ flexDirection: 'column', padding: PAD, gap: GAP, flexGrow: 1 }}>
-        {/* 行1：地址（网卡下拉，选中项即地址与 QR 源）+ ☑右键菜单 */}
+        {/* 行1：地址（网卡下拉，选中项即地址与 QR 源）+ 复制 + ☑右键菜单 */}
         <w type="STATIC"
            ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
            style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
           <ComboBox items={urls} selectedIndex={clamped} onChange={onAddr}
                     style={{ flexGrow: 1, height: CTRL_H }} />
+          <Button onClick={onCopy} style={{ width: COPY_W, height: CTRL_H }}>
+            {copied ? '已复制' : '复制'}
+          </Button>
           <CheckBox label='右键菜单' checked={ctx}
                     onChange={(v) => { if (toggleCtx(v)) setCtx(v) }}
                     style={{ width: CHK_W, height: CTRL_H }} />
