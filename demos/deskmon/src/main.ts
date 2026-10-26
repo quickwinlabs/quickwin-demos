@@ -88,11 +88,11 @@ const MENU_SCALE_BASE = 10          // 大小子菜单 id 基址：10..13 ↔ SC
 const MENU_AUTOSTART = 4            // 开机自启动开关（1/2/10..13 已占）
 const MENU_BG = 5                   // 背景深浅切换
 const MAX_IF = 64               // 接口数上限：MIB_IFTABLE 缓冲按 64 行预分配
-// MIB_IFROW（行距 860B = mingw sizeof，无尾部 padding）——
-//   首行偏移：dwIndex@512 dwType@516 dwMtu@520 dwSpeed@524
-//   dwOperStatus@544  dwInOctets@552  dwInUcastPkts@556  dwOutOctets@576
-//   （552→576 隔着 dwInUcastPkts..dwInUnknownProtos 五个 In* 字段；MSDN 的 MIB_IFROW
-//     把 dwOutOctets 紧排其后，照它抄偏移就落到入站包计数）
+// MIB_IFROW（mingw iprtrmib.h，sizeof = 860，无尾部 padding）——
+//   wszName@0 WCHAR[256]，其后：dwIndex@512 dwType@516 dwMtu@520 dwSpeed@524
+//   dwPhysAddrLen@528 dwPhysAddr@532[8] dwAdminStatus@540 dwOperStatus@544
+//   dwLastChange@548 dwInOctets@552 dwInUcastPkts@556 … dwInUnknownProtos@572
+//   dwOutOctets@576 dwOutUcastPkts@580 … dwDescrLen@600 bDescr@604[256]
 const IFROW_SIZE = 860
 const IFROW_OFF_TYPE = 516
 const IFROW_OFF_OPER = 544
@@ -124,7 +124,9 @@ const GlobalMemoryStatusEx = bind('kernel32.dll', 'GlobalMemoryStatusEx', '<MEMO
 const GetIfTable = bind('iphlpapi.dll', 'GetIfTable', '<>ptr <>ptr u32 -> u32')
 // 默认路由所在接口：GetIfTable 会把 WSL/Docker/VPN 等虚拟网卡与其转发的物理网卡各记一次
 // 同一批字节（dwType 都是 ETHERNET，无从区分），求和会大几倍；只统计这张 = 外网速度
-const GetBestInterface = bind('iphlpapi.dll', 'GetBestInterface', 'u32 -> u32')
+// ifIndex 走 PDWORD 出参（mingw `GetBestInterface(IPAddr, PDWORD*)`），误绑 1 参会让出参
+// 落在栈垃圾上、bestHit 永远 false，退化成全量求和 = 虚拟网卡双计数原样复现
+const GetBestInterface = bind('iphlpapi.dll', 'GetBestInterface', 'u32 <>ptr -> u32')
 // 半透明：lib/windows 未封装 → 自 bind
 const SetLayeredWindowAttributes = bind('user32.dll', 'SetLayeredWindowAttributes', '<>ptr u32 u32 u32 -> i32')
 // 圆角 region：lib/windows 未封装 → 自 bind（HRGN 成功后系统接管，勿 DeleteObject）
@@ -217,6 +219,7 @@ function sampleMem(): number | null {
 // MIB_IFTABLE 变长表：4B dwNumEntries + MAX_IF × MIB_IFROW 连续行；手动 DataView 读取
 const ifBuf = new PtrArrayBuffer(4 + MAX_IF * IFROW_SIZE)
 const ifSize = new PtrArrayBuffer(4)
+const bestIf = new PtrArrayBuffer(4)   // GetBestInterface 的 PDWORD 出参
 let prevNetIn = -1, prevNetOut = -1, prevNetMs = 0
 /** [下行B/s, 上行B/s]；首个样本/失败返回 null */
 function sampleNet(): [number, number] | null {
@@ -224,7 +227,10 @@ function sampleNet(): [number, number] | null {
     new DataView(ifSize).setUint32(0, ifBuf.byteLength, true)   // 入参：缓冲容量（写 pSize，别污染 ifBuf 的 dwNumEntries）
     if (GetIfTable(ifBuf.ptr, ifSize.ptr, 1) !== 0) return null  // NO_ERROR = 0
     const n = Math.min(dv.getUint32(0, true), MAX_IF)
-    const best = GetBestInterface(0)   // 默认路由网卡；IF_INDEX_ERROR(0xffffffff) = 无
+    // 2 参：ifIndex 走出参；rc != NO_ERROR（如 ERROR_NO_NETWORK）→ IF_INDEX_ERROR 回落求和
+    const best = GetBestInterface(0, bestIf.ptr) === 0
+        ? new DataView(bestIf).getUint32(0, true)
+        : 0xffffffff
     // 优先只统计默认路由网卡：WSL2/Docker/VPN 等虚拟网卡与其转发的物理网卡会各记一次
     // 同一批字节（dwType 都是 ETHERNET，无从区分），求和会大几倍；best 未在表中则回落全量求和
     let inSum = 0, outSum = 0, bestIn = 0, bestOut = 0, bestHit = false
