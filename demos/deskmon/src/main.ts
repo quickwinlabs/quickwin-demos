@@ -14,7 +14,7 @@
 // 数据全部来自 Win32 FFI（XP+ 可用，无第三方依赖）：
 //   CPU    GetSystemTimes 两次采样差分（kernel32）
 //   内存   GlobalMemoryStatusEx（kernel32）
-//   网速   GetIfTable 遍历非 loopback 且 OPER_UP 的接口，In/OutOctets 差分（iphlpapi）
+//   网速   GetBestInterface 定位默认路由网卡，GetIfTable 取其 In/OutOctets 差分（iphlpapi）
 //
 // 构建：npm run build（tsc noEmit 类型检查 → build.ts：esbuild --bundle → brotli embed）
 //   - 枚举（WindowStyle 等）import 自 quickwin/constants（真 .ts），const enum 内联
@@ -88,14 +88,17 @@ const MENU_SCALE_BASE = 10          // 大小子菜单 id 基址：10..13 ↔ SC
 const MENU_AUTOSTART = 4            // 开机自启动开关（1/2/10..13 已占）
 const MENU_BG = 5                   // 背景深浅切换
 const MAX_IF = 64               // 接口数上限：MIB_IFTABLE 缓冲按 64 行预分配
-// MIB_IFROW（实测行距 860B = MSDN sizeof；mingw 头的 852 少 8B 尾部 padding）——
+// MIB_IFROW（行距 860B = mingw sizeof，无尾部 padding）——
 //   首行偏移：dwIndex@512 dwType@516 dwMtu@520 dwSpeed@524
-//   dwOperStatus@544  dwInOctets@552  dwOutOctets@556
+//   dwOperStatus@544  dwInOctets@552  dwInUcastPkts@556  dwOutOctets@576
+//   （552→576 隔着 dwInUcastPkts..dwInUnknownProtos 五个 In* 字段；MSDN 的 MIB_IFROW
+//     把 dwOutOctets 紧排其后，照它抄偏移就落到入站包计数）
 const IFROW_SIZE = 860
 const IFROW_OFF_TYPE = 516
 const IFROW_OFF_OPER = 544
+const IFROW_OFF_INDEX = 512   // dwIndex：对齐 GetBestInterface 返回的 ifIndex
 const IFROW_OFF_IN = 552
-const IFROW_OFF_OUT = 556
+const IFROW_OFF_OUT = 576
 
 // ── FFI：结构（出参位 def.alloc() 零填充槽，调用后 decode 读回）──
 const FILETIME = /* @__PURE__ */ struct('FILETIME', {
@@ -119,6 +122,9 @@ const MEMORYSTATUSEX = /* @__PURE__ */ struct('MEMORYSTATUSEX', {
 const GetSystemTimes = bind('kernel32.dll', 'GetSystemTimes', '<FILETIME>ptr <FILETIME>ptr <FILETIME>ptr -> i32')
 const GlobalMemoryStatusEx = bind('kernel32.dll', 'GlobalMemoryStatusEx', '<MEMORYSTATUSEX>ptr -> i32', { MEMORYSTATUSEX })
 const GetIfTable = bind('iphlpapi.dll', 'GetIfTable', '<>ptr <>ptr u32 -> u32')
+// 默认路由所在接口：GetIfTable 会把 WSL/Docker/VPN 等虚拟网卡与其转发的物理网卡各记一次
+// 同一批字节（dwType 都是 ETHERNET，无从区分），求和会大几倍；只统计这张 = 外网速度
+const GetBestInterface = bind('iphlpapi.dll', 'GetBestInterface', 'u32 -> u32')
 // 半透明：lib/windows 未封装 → 自 bind
 const SetLayeredWindowAttributes = bind('user32.dll', 'SetLayeredWindowAttributes', '<>ptr u32 u32 u32 -> i32')
 // 圆角 region：lib/windows 未封装 → 自 bind（HRGN 成功后系统接管，勿 DeleteObject）
@@ -218,14 +224,21 @@ function sampleNet(): [number, number] | null {
     new DataView(ifSize).setUint32(0, ifBuf.byteLength, true)   // 入参：缓冲容量（写 pSize，别污染 ifBuf 的 dwNumEntries）
     if (GetIfTable(ifBuf.ptr, ifSize.ptr, 1) !== 0) return null  // NO_ERROR = 0
     const n = Math.min(dv.getUint32(0, true), MAX_IF)
-    let inSum = 0, outSum = 0
+    const best = GetBestInterface(0)   // 默认路由网卡；IF_INDEX_ERROR(0xffffffff) = 无
+    // 优先只统计默认路由网卡：WSL2/Docker/VPN 等虚拟网卡与其转发的物理网卡会各记一次
+    // 同一批字节（dwType 都是 ETHERNET，无从区分），求和会大几倍；best 未在表中则回落全量求和
+    let inSum = 0, outSum = 0, bestIn = 0, bestOut = 0, bestHit = false
     for (let r = 0; r < n; r++) {
         const off = 4 + r * IFROW_SIZE
         if (dv.getUint32(off + IFROW_OFF_TYPE, true) === IfType.SOFTWARE_LOOPBACK) continue
         // 不按 operStatus 过滤：Dormant(5) 等低功耗态接口同样承载流量（win7 NAT 网卡实测 Dormant）
-        inSum += dv.getUint32(off + IFROW_OFF_IN, true)
-        outSum += dv.getUint32(off + IFROW_OFF_OUT, true)
+        const inc = dv.getUint32(off + IFROW_OFF_IN, true)
+        const ouc = dv.getUint32(off + IFROW_OFF_OUT, true)
+        inSum += inc
+        outSum += ouc
+        if (!bestHit && dv.getUint32(off + IFROW_OFF_INDEX, true) === best) { bestIn = inc; bestOut = ouc; bestHit = true }
     }
+    if (best !== 0 && best !== 0xffffffff && bestHit) { inSum = bestIn; outSum = bestOut }
     const now = Date.now()
     if (prevNetIn < 0) { prevNetIn = inSum; prevNetOut = outSum; prevNetMs = now; return null }
     const dt = (now - prevNetMs) / 1000
