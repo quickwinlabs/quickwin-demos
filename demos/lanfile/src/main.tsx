@@ -45,8 +45,10 @@ import * as std from 'std'
 import * as ffi from 'ffi'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { bind, WCHAR } from 'quickwin/lib/ffi/bind.js'
-import { NULL, PtrArrayBuffer, type Ptr } from 'quickwin/lib/ffi/ctype.js'
-import { Button, CheckBox, ComboBox, ListBox, PathPicker, render } from 'quickwin/lib/react-qw/index.js'
+import { struct } from 'quickwin/lib/ffi/struct.js'
+import { NULL, PtrArrayBuffer, type MaybePtr, type Ptr } from 'quickwin/lib/ffi/ctype.js'
+import type { WEvent } from 'quickwin/lib/msg-registry.js'
+import { Button, CheckBox, ComboBox, ListBox, PathPicker, createRoot } from 'quickwin/lib/react-qw/index.js'
 import { forceFlexLayout } from 'quickwin/lib/react-qw/reconciler.js'
 import {
     BeginPaint, CloseClipboard, EmptyClipboard, EndPaint, FillRect, FindWindow,
@@ -69,6 +71,14 @@ import {
     BackgroundMode, ErrorCode, MbFlag, MbResult, OpenFileNameFlag, RasterOp,
     SetWindowPosFlag, SetWindowPosHwnd, ShowWindowCmd, WindowStyle, WmMsg,
 } from 'quickwin/constants'
+
+// 消费方声明合并：WM_COPYDATA 是 lanfile 特有的单实例转发消息（框架注册表不预填），
+// lParam = COPYDATASTRUCT*（lanfile 当原始指针读）
+declare global {
+    interface QuickWinMsgRegistry {
+        [WmMsg.COPYDATA]: { wParam: number; lParam: MaybePtr<'COPYDATASTRUCT'> }
+    }
+}
 import * as shares from './shares.js'
 import * as netif from './netif.js'
 import * as ctxmenu from './ctxmenu.js'
@@ -380,20 +390,20 @@ function bringToFront(): void {
 }
 
 // ── WM_COPYDATA 接收：lParam → COPYDATASTRUCT → UTF-16 路径 ──
-function recvCopyData(lParam: number): void {
+// COPYDATASTRUCT（Win32）：dwData=ULONG_PTR、lpData=PVOID（指针宽度，MSVC 自动对齐）
+const COPYDATASTRUCT = struct('COPYDATASTRUCT', {
+    dwData: '<>ptr', cbData: 'u32', lpData: '<>ptr',
+})
+function recvCopyData(lParam: MaybePtr<'COPYDATASTRUCT'>): void {
     try {
         if (!lParam) return
-        const magic = ffi.readPtr(lParam)
-        if (magic !== COPYDATA_MAGIC) return
-        const cbData = os.arch !== 'ia32'
-            ? new DataView(ffi.readBytes(lParam + 8, 4)).getUint32(0, true)
-            : new DataView(ffi.readBytes(lParam + 4, 4)).getUint32(0, true)
-        const lpData = ffi.readPtr(lParam + (IS64 ? 16 : 8))
-        if (cbData === 0 || !lpData) {
+        const cds = COPYDATASTRUCT.decode(lParam)
+        if (cds.dwData !== COPYDATA_MAGIC) return
+        if (cds.cbData === 0 || !cds.lpData) {
             bringToFront()      // 空消息 = 第二实例请求"带前台"
             return
         }
-        const bytes = ffi.readBytes(lpData, cbData)
+        const bytes = ffi.readBytes(cds.lpData, cds.cbData)
         const path = new TextDecoder('utf-16le').decode(new Uint8Array(bytes))
         // 尾部 NUL 去除
         const clean = path.replace(/\0+$/, '')
@@ -558,33 +568,28 @@ function App({ addrs, initIdx, port, uploadDir }: {
     )
 }
 
-// 主窗类过程：react-qw 的根实例只管 flex 布局，窗口级消息自己接
-gui.RegisterClass('lanfile_Main', (hwnd: HWND, msg: number, wParam: number, lParam: number): number => {
-    if (!hwnd) return gui.DefWindowProc(hwnd, msg, wParam, lParam)
-    if (msg === WmMsg.ERASEBKGND) return 1   // 背景由 paint 统一填，避免先擦白再画闪一下
-    if (msg === WmMsg.PAINT) {
-        const hdc = BeginPaint(hwnd, paintBuf.ptr)
+// 窗口级消息（react-qw 默认类过程已处理 SIZE/DESTROY；这里只接 lanfile 特有的）
+function onRootMsg(e: WEvent): number | void {
+    if (e.msg === WmMsg.ERASEBKGND) return 1   // 背景由 paint 统一填，避免先擦白再画闪一下
+    if (e.msg === WmMsg.PAINT) {
+        const hdc = BeginPaint(e.hwnd, paintBuf.ptr)
         if (hdc) {
-            const { w, h } = clientSize(hwnd)
+            const { w, h } = clientSize(e.hwnd)
             fillWhite(hdc, w, h)
-            EndPaint(hwnd, paintBuf.ptr)
+            EndPaint(e.hwnd, paintBuf.ptr)
         }
         return 0
     }
-    if (msg === WmMsg.SIZE) {
-        forceFlexLayout(hwnd)             // 缩放 → flex 重排
-        return gui.DefWindowProc(hwnd, msg, wParam, lParam)
-    }
-    if (msg === WmMsg.COPYDATA) {
-        recvCopyData(lParam)
+    if (e.msg === WmMsg.COPYDATA) {
+        recvCopyData(e.lParam)
         return 1
     }
-    if (msg === WmMsg.CLOSE) {
+    if (e.msg === WmMsg.CLOSE) {
         PostQuitMessage(0)
         return 0
     }
-    return gui.DefWindowProc(hwnd, msg, wParam, lParam)
-})
+    // SIZE → react-qw forceFlexLayout；DESTROY → react-qw 清 rootMap
+}
 
 // ── 启动 ──
 function main(): void {
@@ -595,7 +600,7 @@ function main(): void {
     const exists = GetLastError() === ErrorCode.ALREADY_EXISTS
     const argvPaths = scriptArgPaths()
     if (exists) {
-        const hwnd = FindWindow('lanfile_Main', NULL)
+        const hwnd = FindWindow(NULL, 'lanfile')
         if (hwnd) {
             for (const p of argvPaths) forwardPath(hwnd, p)
             if (argvPaths.length === 0) forwardPath(hwnd, null)
@@ -606,13 +611,9 @@ function main(): void {
 
     // 2. 窗口（消息循环集成在 os 事件循环；gui 无独立 pump 调用）
     // CLIPCHILDREN：父窗自绘时不往子控件区域画（否则整块 FillRect 会盖住控件）
-    hwndMain = gui.CreateWindow('lanfile_Main', 'lanfile',
-        WindowStyle.OVERLAPPEDWINDOW | WindowStyle.CLIPCHILDREN,
-        Math.round(80 * S), Math.round(80 * S), WIN_W, WIN_H, null, null)
-    if (!hwndMain) {
-        log('CreateWindow failed')
-        std.exit(1)
-    }
+    const root = createRoot({ text: 'lanfile', ws: WindowStyle.CLIPCHILDREN,
+        width: WIN_W / S, height: WIN_H / S, onEvent: onRootMsg })
+    hwndMain = root.hwnd
     const exe = ctxmenu.exePath()
     // 上传目录：配置里有就用（上次选过），否则 exe 同级 uploads
     uploadAbs = (cfg.uploads && cfg.uploads.length > 0)
@@ -646,11 +647,8 @@ function main(): void {
     shareItems = itemsOf()
 
     // 5. 渲染 + 显示
-    render(<App addrs={lan.all} initIdx={initIdx} port={port}
-                uploadDir={uploadAbs} />, hwndMain)
-    SetWindowPos(hwndMain, SetWindowPosHwnd.TOP, 0, 0, 0, 0,
-        SetWindowPosFlag.SWP_NOMOVE | SetWindowPosFlag.SWP_NOSIZE)
-    ShowWindow(hwndMain, ShowWindowCmd.SHOWNORMAL)
+    root.render(<App addrs={lan.all} initIdx={initIdx} port={port}
+                uploadDir={uploadAbs} />)
     print('lanfile: http://' + lan.all[initIdx] + ':' + port + '/ uploads=' + uploadAbs)
 
     // 6. 防火墙：窗口显示后再提示，避免模态框挂在不可见窗口上
