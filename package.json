@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "lean-qr": "^2.7.4",
-    "quickwin": "^3.2.4",
+    "quickwin": "^3.3.0",
     "react": "^19.2.7"
   },
   "devDependencies": {
