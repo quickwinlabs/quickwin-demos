@@ -59,7 +59,9 @@ function sanitizeRel(raw: string): string {
 function listHtml(): Response {
     const items = shares.all()
     const lis = items.map((e) =>
-        '<li><a href="/f/' + e.id + '">' + esc(e.rel) + '</a><span>' + fmtSize(e.size) + '</span></li>'
+        '<li><label><input type="checkbox" class="dl" data-id="' + e.id
+        + '" data-rel="' + esc(e.rel) + '"></label>'
+        + '<a href="/f/' + e.id + '">' + esc(e.rel) + '</a><span>' + fmtSize(e.size) + '</span></li>'
     ).join('')
     const listBody = items.length > 0
         ? '<ul>' + lis + '</ul>'
@@ -84,6 +86,9 @@ li{display:flex;justify-content:space-between;gap:12px;padding:10px 2px;border-b
 li span{color:#888;white-space:nowrap}
 a{color:#2563eb;text-decoration:none;word-break:break-all}
 .empty{color:#999;font-size:14px;text-align:center;padding:18px 0}
+.dlbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:4px;font-size:14px}
+.dlbar button{width:auto;padding:7px 16px;font-size:13px;margin-top:0}
+li input[type=checkbox]{margin-right:4px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -99,6 +104,7 @@ a{color:#2563eb;text-decoration:none;word-break:break-all}
 </div>
 <div class="card">
   <b>从电脑接收</b>
+  ${items.length > 0 ? '<div class="dlbar"><label><input type="checkbox" id="selall">全选</label><button id="dlsel" disabled>下载选中</button></div>' : ''}
   ${listBody}
 </div>
 <script>
@@ -131,6 +137,33 @@ btn.onclick = function () {
       .catch(function () { fail++; i++; next() })
   }
   next()
+}
+// 批量下载：勾选 → 逐个 <a download> 触发（浏览器询问"允许下载多个文件"）
+var boxes = [].slice.call(document.querySelectorAll('input.dl'))
+var selAll = document.getElementById('selall')
+var dlSel = document.getElementById('dlsel')
+function refreshSel() {
+  var on = boxes.filter(function (b) { return b.checked })
+  dlSel.disabled = on.length === 0
+  selAll.checked = boxes.length > 0 && on.length === boxes.length
+}
+if (boxes.length) {
+  boxes.forEach(function (b) { b.onchange = refreshSel })
+  selAll.onchange = function () {
+    boxes.forEach(function (b) { b.checked = selAll.checked })
+    refreshSel()
+  }
+  dlSel.onclick = function () {
+    boxes.filter(function (b) { return b.checked }).forEach(function (b) {
+      var a = document.createElement('a')
+      a.href = '/f/' + b.getAttribute('data-id')
+      a.download = b.getAttribute('data-rel') || ''
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    })
+  }
+  refreshSel()
 }
 </script>
 </body>
