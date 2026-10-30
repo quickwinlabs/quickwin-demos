@@ -76,6 +76,7 @@ import {
 declare global {
     interface QuickWinMsgRegistry {
         [WmMsg.COPYDATA]: { wParam: number; lParam: MaybePtr<'COPYDATASTRUCT'> }
+        [WmMsg.DROPFILES]: { wParam: number; lParam: number }   // wParam = HDROP
     }
 }
 import * as shares from './shares.js'
@@ -161,6 +162,12 @@ function saveCfg(c: Cfg): void {
 const MUTEX_NAME = 'Local\\lanfile-singleton'
 const GetLastError = bind('kernel32.dll', 'GetLastError', ' -> u32')
 const FlashWindow = bind('user32.dll', 'FlashWindow', '<HWND>ptr i32 -> i32')
+
+// 文件拖拽（经典 WM_DROPFILES，Win95 起稳定）：目标窗 DragAcceptFiles 接受，
+// 拖入时收 WM_DROPFILES(wParam=HDROP)，DragQueryFileW 逐个取路径，DragFinish 释放
+const DragAcceptFiles = bind('shell32.dll', 'DragAcceptFiles', '<HWND>ptr i32 -> void')
+const DragQueryFileW = bind('shell32.dll', 'DragQueryFileW', 'u32 u32 <WCHAR>ptr u32 -> u32')
+const DragFinish = bind('shell32.dll', 'DragFinish', 'u32 -> void')
 
 /** 向已运行主窗转发文件路径；path=null 发空消息仅请求"带到前台"。成功 true */
 function forwardPath(hwnd: HWND, path: string | null): boolean {
@@ -391,6 +398,23 @@ function recvCopyData(lParam: MaybePtr<'COPYDATASTRUCT'>): void {
     }
 }
 
+/** 拖拽文件到主窗：HDROP → 逐个路径加入分享（DragFinish 释放） */
+function recvDropFiles(hdrop: number): void {
+    try {
+        const n = DragQueryFileW(hdrop, 0xFFFFFFFF, NULL, 0)   // 0xFFFFFFFF = 查文件数
+        for (let i = 0; i < n; i++) {
+            const len = DragQueryFileW(hdrop, i, NULL, 0)      // 路径字符数（不含 NUL）
+            if (len <= 0) continue
+            const buf = WCHAR.alloc(len + 1)   // +1：DragQueryFileW 写含 NUL 终止，len 不含它
+            DragQueryFileW(hdrop, i, buf.ptr, len + 1)
+            const path = decodeUtf16(buf).replace(/\0+$/, '')
+            if (path) shares.addPath(path)
+        }
+    } finally {
+        DragFinish(hdrop)
+    }
+}
+
 // ── 动作 ──
 function addFiles(): void {
     for (const f of openFilesDialog()) shares.addPath(f)
@@ -563,6 +587,10 @@ function onRootMsg(e: WEvent): number | void {
         recvCopyData(e.lParam)
         return 1
     }
+    if (e.msg === WmMsg.DROPFILES) {
+        recvDropFiles(e.wParam)
+        return 0
+    }
     if (e.msg === WmMsg.CLOSE) {
         PostQuitMessage(0)
         return 0
@@ -593,6 +621,7 @@ function main(): void {
     const root = createRoot({ text: 'lanfile', ws: WindowStyle.CLIPCHILDREN,
         width: WIN_W / S, height: WIN_H / S, onEvent: onRootMsg })
     hwndMain = root.hwnd
+    DragAcceptFiles(hwndMain, 1)        // 接受文件拖拽到窗口
     const exe = ctxmenu.exePath()
     // 上传目录：配置里有就用（上次选过），否则 exe 同级 uploads
     uploadAbs = (cfg.uploads && cfg.uploads.length > 0)
