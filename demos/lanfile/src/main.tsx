@@ -5,10 +5,10 @@
 //   手机→电脑：手机页面选文件，fetch PUT 裸 body 流式上传到 exe 同级 uploads\
 //
 // UI 层用 react-qw（React reconciler → HWND）：布局是 flex（padding/gap/flexGrow），
-// 缩放自动重排（WM_SIZE → forceFlexLayout），不再手写 CreateWindowEx + SetWindowPos。
+// 缩放自动重排（WM_SIZE → react-qw 默认类过程 forceFlexLayout），不再手写 CreateWindowEx + SetWindowPos。
 // 三处仍是原生代码：
-//   1. 主窗类过程：单实例判重复用的 FindWindow('lanfile_Main')、WM_COPYDATA 收文件、
-//      WM_CLOSE 退出、WM_PAINT 铺白（react-qw 的根实例只管 flex 布局）
+//   1. 主窗：createRoot 默认类过程 + onEvent 接窗口级消息（ERASEBKGND/PAINT/COPYDATA/CLOSE；
+//      SIZE/DESTROY 交 react-qw 默认类过程）；单实例判重复用 FindWindow(NULL, 'lanfile')
 //   2. QR 面板：STATIC 自绘，用 object 形式 onEvent 接管 PAINT（跳过默认擦除防闪）
 //   3. 选文件对话框：PathPicker 自带路径输入框，跟这里「按钮触发」的语义不同 → 照它的
 //      原生调用法自己调 GetOpenFileName
@@ -49,11 +49,10 @@ import { struct } from 'quickwin/lib/ffi/struct.js'
 import { NULL, PtrArrayBuffer, type MaybePtr, type Ptr } from 'quickwin/lib/ffi/ctype.js'
 import type { WEvent } from 'quickwin/lib/msg-registry.js'
 import { Button, CheckBox, ComboBox, ListBox, PathPicker, createRoot } from 'quickwin/lib/react-qw/index.js'
-import { forceFlexLayout } from 'quickwin/lib/react-qw/reconciler.js'
 import {
     BeginPaint, CloseClipboard, EmptyClipboard, EndPaint, FillRect, FindWindow,
     GetClientRect, InvalidateRect, IsIconic, MessageBox, OpenClipboard, PostQuitMessage,
-    SendMessage, SetClipboardData, SetForegroundWindow, ShowWindow, SetWindowPos,
+    SendMessage, SetClipboardData, SetForegroundWindow, ShowWindow,
 } from 'quickwin/lib/windows/user32.js'
 import {
     BitBlt, CreateBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject,
@@ -69,7 +68,7 @@ import { createSystemDpiFont, getScaleFactor } from 'quickwin/lib/dpi.js'
 import { allowApp, queryFirewall } from 'quickwin/lib/netfw.js'
 import {
     BackgroundMode, ErrorCode, MbFlag, MbResult, OpenFileNameFlag, RasterOp,
-    SetWindowPosFlag, SetWindowPosHwnd, ShowWindowCmd, WindowStyle, WmMsg,
+    ShowWindowCmd, WindowStyle, WmMsg,
 } from 'quickwin/constants'
 
 // 消费方声明合并：WM_COPYDATA 是 lanfile 特有的单实例转发消息（框架注册表不预填），
@@ -163,39 +162,13 @@ const MUTEX_NAME = 'Local\\lanfile-singleton'
 const GetLastError = bind('kernel32.dll', 'GetLastError', ' -> u32')
 const FlashWindow = bind('user32.dll', 'FlashWindow', '<HWND>ptr i32 -> i32')
 
-const IS64 = os.arch !== 'ia32'
-const CDS_SIZE = IS64 ? 24 : 12   // COPYDATASTRUCT：dwData(ULONG_PTR) cbData(DWORD) lpData(PTR)
-                                  // x64 实占 24（cbData 后 4B 对齐垫）；ia32 12
-
-function wbuf(s: string): PtrArrayBuffer<''> {
-    const p = new PtrArrayBuffer((s.length + 1) * 2)
-    const dv = new DataView(p)
-    for (let i = 0; i <= s.length; i++) dv.setUint16(i * 2, s.charCodeAt(i), true)
-    return p
-}
-
-// 按小端把 64 位整数写进 [off, off+8)。setUint32 会 ToUint32 截断，高位必须单独写——
-// 之前 x64 分支把 lpData 高位硬写 0，只要堆地址落在 4GB 之上 lpData 就变成截断值，
-// 主进程从错误地址读路径：静默丢条目或解出乱码。
-function putPtr(dv: DataView, off: number, v: number): void {
-    dv.setUint32(off, v >>> 0, true)
-    dv.setUint32(off + 4, Math.floor(v / 0x100000000), true)
-}
-
 /** 向已运行主窗转发文件路径；path=null 发空消息仅请求"带到前台"。成功 true */
 function forwardPath(hwnd: HWND, path: string | null): boolean {
-    const data = path === null ? null : wbuf(path)   // const 绑定：SendMessage 期间保活
-    const cds = new PtrArrayBuffer(CDS_SIZE)
-    const dv = new DataView(cds)
-    if (IS64) {
-        putPtr(dv, 0, COPYDATA_MAGIC)                            // dwData
-        dv.setUint32(8, data ? data.byteLength : 0, true)        // cbData
-        putPtr(dv, 16, data ? data.ptr : 0)                      // lpData
-    } else {
-        dv.setUint32(0, COPYDATA_MAGIC, true)
-        dv.setUint32(4, data ? data.byteLength : 0, true)
-        dv.setUint32(8, data ? data.ptr : 0, true)
-    }
+    const data = path === null ? null : WCHAR.encode(path)   // const 绑定：SendMessage 期间保活
+    const cds = COPYDATASTRUCT.encode({
+        dwData: COPYDATA_MAGIC, cbData: data ? data.byteLength : 0,
+        lpData: data ? data.ptr : 0,
+    })
     // SendMessage 同步：主进程拷完才返回，cds/data 生命周期因此安全
     SendMessage(hwnd, WmMsg.COPYDATA, 0, cds.ptr)
     return true
@@ -224,6 +197,11 @@ function fmtSize(n: number): string {
     if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
     if (n >= 1024) return (n / 1024).toFixed(1) + ' KB'
     return n + ' B'
+}
+
+/** UTF-16LE 解码（Win32 宽字符面；recvCopyData 路径 / 文件对话框共用） */
+function decodeUtf16(buf: ArrayBuffer): string {
+    return new TextDecoder('utf-16le').decode(new Uint8Array(buf))
 }
 
 function itemsOf(): string[] {
@@ -368,8 +346,7 @@ function openFilesDialog(): string[] {
                 | OpenFileNameFlag.ALLOWMULTISELECT | OpenFileNameFlag.EXPLORER,
         })
         if (!GetOpenFileName(ofn.ptr)) return []
-        const strs = new TextDecoder('utf-16le')
-            .decode(new Uint8Array(fileBuf)).split('\0')
+        const strs = decodeUtf16(fileBuf).split('\0')
         const dir = strs[0] ?? ''
         const files = strs.slice(1).filter((f) => f.length > 0).map((f) => dir + '\\' + f)
         if (files.length > 0) return files
@@ -404,7 +381,7 @@ function recvCopyData(lParam: MaybePtr<'COPYDATASTRUCT'>): void {
             return
         }
         const bytes = ffi.readBytes(cds.lpData, cds.cbData)
-        const path = new TextDecoder('utf-16le').decode(new Uint8Array(bytes))
+        const path = decodeUtf16(bytes)
         // 尾部 NUL 去除
         const clean = path.replace(/\0+$/, '')
         if (clean) shares.addPath(clean)
@@ -467,17 +444,19 @@ function checkFirewall(exe: string): void {
 }
 
 // ── 剪贴板：CF_UNICODETEXT，GlobalAlloc 拿块 + RtlMoveMemory 灌数据（与 test_sysinfo 同款）──
+const GMEM_MOVEABLE = 0x2          // GlobalAlloc：可移动块（剪贴板惯例）
+const CF_UNICODETEXT = 13          // 剪贴板格式：UTF-16 文本
 function copyText(text: string): boolean {
     if (!OpenClipboard(NULL)) return false          // 别的进程占着剪贴板就放弃，不打扰用户
     EmptyClipboard()
     const src = WCHAR.encode(text)                  // 自带 NUL 终止
-    const hMem = GlobalAlloc(0x2 /* GMEM_MOVEABLE */, src.byteLength)
+    const hMem = GlobalAlloc(GMEM_MOVEABLE, src.byteLength)
     if (!hMem) { CloseClipboard(); return false }
     const dst = GlobalLock(hMem)
     if (!dst) { GlobalFree(hMem); CloseClipboard(); return false }
     RtlMoveMemory(dst, src, src.byteLength)
     GlobalUnlock(hMem)
-    const ok = SetClipboardData(13 /* CF_UNICODETEXT */, hMem) !== 0
+    const ok = SetClipboardData(CF_UNICODETEXT, hMem) !== 0
     if (!ok) GlobalFree(hMem)                       // 成功后所有权归系统，不能再释放
     CloseClipboard()
     return ok
