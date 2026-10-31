@@ -12,9 +12,11 @@ import 'quickwin/lib/polyfill.js'   // URL / URLSearchParams / TextEncoder（上
 import { createServer } from 'quickwin/lib/http-server.js'
 import type { ServerHandler } from 'quickwin/lib/http-server.js'
 import * as shares from './shares.js'
+import * as texts from './texts.js'
 import * as wfile from './wfile.js'
 
 const CHUNK = 65536
+const TEXT_MAX = 64 * 1024   // 共享文字上限（64KB），超出返回 413
 
 export let uploadDir = ''   // 启动时 setUploadDir 注入（配置里的 uploads，缺省 exe 同级）；
                             // UI 上换目录也会再次注入，server 立即改走新目录
@@ -66,6 +68,12 @@ function listHtml(): Response {
     const listBody = items.length > 0
         ? '<ul>' + lis + '</ul>'
         : '<p class="empty">电脑端还没有共享文件——但你现在就可以往下面传。</p>'
+    // 当前文字直出首屏：无 JS / 轮询失败（如 IE 无 fetch）时也能看到内容
+    const curText = texts.get().text
+    const curTs = texts.get().ts
+    const textBody = curText
+        ? esc(curText)
+        : '<span class="empty">（暂无文字）</span>'
     const html = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -89,11 +97,23 @@ a{color:#2563eb;text-decoration:none;word-break:break-all}
 .dlbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:4px;font-size:14px}
 .dlbar button{width:auto;padding:7px 16px;font-size:13px;margin-top:0}
 li input[type=checkbox]{margin-right:4px;vertical-align:middle}
+.tbox{white-space:pre-wrap;word-break:break-word;background:#f7f7f8;border:1px solid #eee;border-radius:8px;padding:10px;min-height:40px;max-height:180px;overflow:auto;font-size:14px;line-height:1.5}
+.tbox .empty{padding:0;text-align:left}
+textarea{width:100%;box-sizing:border-box;margin:8px 0 0;padding:8px;border:1px solid #ccc;border-radius:8px;font:inherit;resize:vertical}
 </style>
 </head>
 <body>
 <h2>lanfile</h2>
 <p class="sub">同一 Wi-Fi 内的文件直传 · 不经外网</p>
+<div class="card">
+  <b>文字同步</b>
+  <p class="hint">电脑端「文字」页签里的内容，这里实时同步（只保留最新一条）</p>
+  <div id="tcur" class="tbox">${textBody}</div>
+  <button id="tcopy" disabled>复制</button>
+  <textarea id="tsend" rows="3" maxlength="60000" placeholder="输入要发送到电脑的文字"></textarea>
+  <button id="tgo">发送到电脑</button>
+  <div id="tstatus"></div>
+</div>
 <div class="card">
   <b>发送到电脑</b>
   <p class="hint">选择文件（安卓可整文件夹；iPhone 支持多选照片）</p>
@@ -165,6 +185,77 @@ if (boxes.length) {
   }
   refreshSel()
 }
+// 文字同步：桌面「文字」页签与这里共用最新一条（GET 轮询 / PUT 发送）
+var tcur = document.getElementById('tcur')
+var tcopy = document.getElementById('tcopy')
+var tsend = document.getElementById('tsend')
+var tgo = document.getElementById('tgo')
+var tstatus = document.getElementById('tstatus')
+var tts = ${curTs}
+function renderText(t) {
+  if (t === '') {
+    tcur.innerHTML = '<span class="empty">（暂无文字）</span>'
+    tcopy.disabled = true
+  } else {
+    tcur.textContent = t
+    tcopy.disabled = false
+  }
+}
+function applyText(j) {
+  tts = j.ts || 0
+  renderText(typeof j.text === 'string' ? j.text : '')
+}
+function pollText() {
+  if (document.hidden) return
+  fetch('t?since=' + tts, { cache: 'no-store' })
+    .then(function (r) { return r.status === 204 ? null : r.json() })
+    .then(function (j) { if (j) applyText(j) })
+    .catch(function () { /* 网络抖动忽略 */ })
+}
+tgo.onclick = function () {
+  var v = tsend.value
+  if (!v) { tstatus.textContent = '先输入文字'; return }
+  tgo.disabled = true
+  tstatus.textContent = '发送中…'
+  fetch('t', { method: 'PUT', body: v })
+    .then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      return r.json()
+    })
+    .then(function (j) {
+      applyText(j)
+      tstatus.textContent = '已发送'
+      tsend.value = ''
+    })
+    .catch(function (e) { tstatus.textContent = '发送失败：' + e.message })
+    .then(function () { tgo.disabled = false })
+}
+tcopy.onclick = function () {
+  var t = tcur.textContent || ''
+  if (!t) return
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t)
+      .then(function () { tstatus.textContent = '已复制' })
+      .catch(function () { fallbackCopy(t) })
+  } else {
+    fallbackCopy(t)
+  }
+}
+function fallbackCopy(t) {
+  var ta = document.createElement('textarea')
+  ta.value = t
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  var ok = false
+  try { ok = document.execCommand('copy') } catch (e) { ok = false }
+  document.body.removeChild(ta)
+  tstatus.textContent = ok ? '已复制' : '复制失败，请长按选择'
+}
+pollText()
+setInterval(pollText, 2000)
+document.addEventListener('visibilitychange', function () { if (!document.hidden) pollText() })
 </script>
 </body>
 </html>`
@@ -288,6 +379,51 @@ async function upload(name: string | null, req: Request): Promise<Response> {
     return new Response('ok', { status: 201 })
 }
 
+// ── 共享文字 ──
+
+function textResponse(): Response {
+    return new Response(JSON.stringify(texts.get()), {
+        headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+        },
+    })
+}
+
+/** PUT /t：body 为 UTF-8 纯文本，超限 413；成功后返回最新 {text, ts} */
+async function putText(req: Request): Promise<Response> {
+    if (!req.body) return new Response('no body', { status: 400 })
+    const reader = req.body.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    try {
+        for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (!value || value.length === 0) continue
+            total += value.length
+            if (total > TEXT_MAX) {
+                try { await reader.cancel() } catch { /* 尽力关闭 */ }
+                return new Response('too large', { status: 413 })
+            }
+            chunks.push(value)
+        }
+    } catch {
+        return new Response('read failed', { status: 500 })
+    }
+    const all = new Uint8Array(total)
+    let off = 0
+    for (const c of chunks) { all.set(c, off); off += c.length }
+    const st = texts.set(new TextDecoder('utf-8').decode(all))
+    return new Response(JSON.stringify(st), {
+        status: 200,
+        headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+        },
+    })
+}
+
 // ── 路由 ──
 
 export function buildHandler(): ServerHandler {
@@ -297,12 +433,25 @@ export function buildHandler(): ServerHandler {
             const path = u.pathname
             if (req.method === 'GET' || req.method === 'HEAD') {
                 if (path === '/' || path === '') return listHtml()
+                if (path === '/t') {
+                    const since = u.searchParams.get('since')
+                    if (since !== null && Number(since) === texts.get().ts) {
+                        return new Response(null, {
+                            status: 204,
+                            headers: { 'Cache-Control': 'no-store' },
+                        })
+                    }
+                    return textResponse()
+                }
                 const m = /^\/f\/(\d+)$/.exec(path)
                 if (m) return download(parseInt(m[1], 10),
                     req.headers.get('range'), req.method === 'HEAD')
             }
             if (req.method === 'PUT' && (path === '/up' || path === '/up/')) {
                 return await upload(u.searchParams.get('name'), req)
+            }
+            if (req.method === 'PUT' && path === '/t') {
+                return await putText(req)
             }
             return new Response('not found', { status: 404 })
         } catch (e) {

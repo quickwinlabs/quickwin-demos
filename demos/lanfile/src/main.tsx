@@ -48,10 +48,11 @@ import { bind, WCHAR } from 'quickwin/lib/ffi/bind.js'
 import { struct } from 'quickwin/lib/ffi/struct.js'
 import { NULL, PtrArrayBuffer, type MaybePtr, type Ptr } from 'quickwin/lib/ffi/ctype.js'
 import type { WEvent } from 'quickwin/lib/msg-registry.js'
-import { Button, CheckBox, ComboBox, ListBox, PathPicker, createRoot } from 'quickwin/lib/react-qw/index.js'
+import { Button, CheckBox, ComboBox, ListBox, PathPicker, Tab, createRoot } from 'quickwin/lib/react-qw/index.js'
 import {
     BeginPaint, CloseClipboard, EmptyClipboard, EndPaint, FillRect, FindWindow,
-    GetClientRect, InvalidateRect, IsIconic, MessageBox, OpenClipboard, PostQuitMessage,
+    GetClientRect, GetClipboardData, GetWindowText, GetWindowTextLength,
+    InvalidateRect, IsIconic, MessageBox, OpenClipboard, PostQuitMessage,
     SendMessage, SetClipboardData, SetForegroundWindow, ShowWindow,
 } from 'quickwin/lib/windows/user32.js'
 import {
@@ -67,7 +68,7 @@ import { OPENFILENAMEW, PAINTSTRUCT, RECT } from 'quickwin/lib/windows/structs.j
 import { createSystemDpiFont, getScaleFactor } from 'quickwin/lib/dpi.js'
 import { allowApp, queryFirewall } from 'quickwin/lib/netfw.js'
 import {
-    BackgroundMode, ErrorCode, MbFlag, MbResult, OpenFileNameFlag, RasterOp,
+    BackgroundMode, EditStyle, ErrorCode, MbFlag, MbResult, OpenFileNameFlag, RasterOp,
     ShowWindowCmd, WindowStyle, WmMsg,
 } from 'quickwin/constants'
 
@@ -80,6 +81,7 @@ declare global {
     }
 }
 import * as shares from './shares.js'
+import * as texts from './texts.js'
 import * as netif from './netif.js'
 import * as ctxmenu from './ctxmenu.js'
 import { makeQr, type QrImage } from './qrcode.js'
@@ -486,6 +488,100 @@ function copyText(text: string): boolean {
     return ok
 }
 
+/** 读系统剪贴板文本（CF_UNICODETEXT）；无文本/被其它进程占用时返回 null */
+function readClipboardText(): string | null {
+    if (!OpenClipboard(NULL)) return null
+    try {
+        const h = GetClipboardData(CF_UNICODETEXT)
+        if (!h) return null
+        const p = GlobalLock(h)
+        if (!p) return null
+        try {
+            return WCHAR.decode(p as Ptr<'WCHAR'>)
+        } finally {
+            GlobalUnlock(h)
+        }
+    } finally {
+        CloseClipboard()
+    }
+}
+
+// ── 共享文字：多行 EDIT + 自身消息回读 ──
+// 不用 Input 组件：它只监听 WM_CHAR，Ctrl+V / 删除等不产生 WM_CHAR，会漏掉。
+// 这里直接在 EDIT 上接 KEYUP 与剪贴板消息——先让默认过程处理（完成插入/删除），
+// 再回读全文。KEYUP 覆盖键入、Backspace/Delete、Ctrl+V/X/Z；PASTE/CUT/CLEAR/UNDO
+// 覆盖右键菜单操作（没有按键事件）。
+const WM_CUT = 0x0300
+const WM_PASTE = 0x0302
+const WM_CLEAR = 0x0303
+const WM_UNDO = 0x0304
+
+function readEditText(h: HWND): string {
+    const cap = GetWindowTextLength(h) + 1
+    if (cap <= 1) return ''
+    const buf = WCHAR.alloc(cap)
+    GetWindowText(h, buf, cap)
+    return WCHAR.decode(buf)
+}
+
+function TextArea({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+    const editRef = useRef<HWND>(null)
+    return (
+        <w type="EDIT"
+           text={value}
+           ws={WindowStyle.VISIBLE | WindowStyle.BORDER | WindowStyle.VSCROLL
+               | EditStyle.MULTILINE | EditStyle.AUTOVSCROLL | EditStyle.WANTRETURN}
+           style={{ flexGrow: 1 }}
+           ref={editRef}
+           onEvent={{ fn: (e) => {
+               const ret = e.callOldWndProc()   // 先让默认过程完成编辑
+               // msg 的静态类型是已注册消息的联合；WM_PASTE 等未注册，收窄成 number 再比
+               const msg: number = e.msg
+               if (msg === WmMsg.KEYUP || msg === WM_PASTE || msg === WM_CUT
+                   || msg === WM_CLEAR || msg === WM_UNDO) {
+                   const h = editRef.current
+                   if (h) onChange(readEditText(h))
+               }
+               return ret
+           }}}
+        />
+    )
+}
+
+/** 文字页签内容：本地编辑去抖写回共享 store；手机发来的新文字经 onUpdate 回显 */
+function TextPane() {
+    const [text, setText] = useState(texts.get().text)
+    const textRef = useRef(text)               // 卸载兜底用（state 在 cleanup 闭包里是旧值）
+    const timer = useRef<os.TimerId | null>(null)
+
+    useEffect(() => {
+        texts.onUpdate(() => {
+            const t = texts.get().text
+            textRef.current = t
+            setText((prev) => (prev === t ? prev : t))
+        })
+        return () => {
+            texts.onUpdate(null)
+            if (timer.current !== null) {
+                clearTimeout(timer.current)
+                timer.current = null
+                texts.set(textRef.current)     // 切页签时把还没去抖的编辑落盘
+            }
+        }
+    }, [])
+
+    const onEdit = (v: string): void => {
+        textRef.current = v
+        setText(v)
+        if (timer.current !== null) clearTimeout(timer.current)
+        timer.current = setTimeout(() => {
+            timer.current = null
+            texts.set(v)
+        }, 400)
+    }
+    return <TextArea value={text} onChange={onEdit} />
+}
+
 // ── 界面 ──
 function App({ addrs, initIdx, port, uploadDir }: {
     addrs: string[]; initIdx: number; port: number; uploadDir: string
@@ -495,6 +591,7 @@ function App({ addrs, initIdx, port, uploadDir }: {
     const [ctx, setCtx] = useState(ctxOn)
     const [upDir, setUpDir] = useState(uploadDir)
     const [copied, setCopied] = useState(false)
+    const [tab, setTab] = useState(0)          // 右侧页签：0 文件 / 1 文字
 
     // 下拉项 = 完整 URL（手机要输的就是它）。memo 保持数组引用稳定：ComboBox 的
     // effect 以 [items] 为依赖，每次渲染传新数组会让它 RESETCONTENT 重灌一遍
@@ -528,11 +625,26 @@ function App({ addrs, initIdx, port, uploadDir }: {
         setCopied(true)
         setTimeout(() => setCopied(false), 1200)
     }
+    // 文字页签的两个剪贴板动作（直接读写共享 store，TextPane 会经 onUpdate 回显）
+    const onCopyText = (): void => {
+        const t = texts.get().text
+        if (t) copyText(t)
+    }
+    const onPasteText = (): void => {
+        const t = readClipboardText()
+        if (t !== null) texts.set(t)
+    }
 
     useEffect(() => {
         setItems(itemsOf())               // 对齐 render 前到达的 COPYDATA
         shares.onUpdate(() => setItems(itemsOf()))
     }, [])
+
+    // 页签内容随文件列表变化重建；TextPane 自管文字状态，打字不会重建页签头
+    const tabs = useMemo(() => [
+        { title: '文件', content: <ListBox items={items} style={{ flexGrow: 1 }} /> },
+        { title: '文字', content: <TextPane /> },
+    ], [items])
 
     return (
       <w type="STATIC"
@@ -551,22 +663,32 @@ function App({ addrs, initIdx, port, uploadDir }: {
                     onChange={(v) => { if (toggleCtx(v)) setCtx(v) }}
                     style={{ width: CHK_W, height: CTRL_H }} />
         </w>
-        {/* 行2：左 QR 面板 / 右共享列表（填满剩余高度） */}
+        {/* 行2：左 QR 面板 / 右侧页签（文件列表 / 共享文字），填满剩余高度 */}
         <w type="STATIC"
            ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
            style={{ flexDirection: 'row', gap: GAP * 2, flexGrow: 1 }}>
           <QrView qr={qr} />
-          <ListBox items={items} style={{ flexGrow: 1 }} />
+          <Tab tabs={tabs} selectedIndex={tab} onChange={setTab}
+               style={{ flexGrow: 1 }} />
         </w>
-        {/* 行3：添加文件 / 上传保存目录（PathPicker 选目录）/ 打开目录 */}
-        <w type="STATIC"
-           ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
-           style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
-          <Button onClick={addFiles} style={{ width: ADD_W, height: CTRL_H }}>添加文件</Button>
-          <PathPicker key={upDir} type="folder" value={upDir} onChange={onUpDir}
-                      title='选择上传保存目录' style={{ flexGrow: 1, height: CTRL_H }} />
-          <Button onClick={openUploadDir} style={{ width: OPEN_W, height: CTRL_H }}>打开</Button>
-        </w>
+        {/* 行3：随页签切换——文件：添加/上传目录/打开；文字：复制/粘贴 */}
+        {tab === 0 ? (
+          <w key="files" type="STATIC"
+             ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
+             style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
+            <Button onClick={addFiles} style={{ width: ADD_W, height: CTRL_H }}>添加文件</Button>
+            <PathPicker key={upDir} type="folder" value={upDir} onChange={onUpDir}
+                        title='选择上传保存目录' style={{ flexGrow: 1, height: CTRL_H }} />
+            <Button onClick={openUploadDir} style={{ width: OPEN_W, height: CTRL_H }}>打开</Button>
+          </w>
+        ) : (
+          <w key="text" type="STATIC"
+             ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
+             style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
+            <Button onClick={onCopyText} style={{ width: COPY_W, height: CTRL_H }}>复制</Button>
+            <Button onClick={onPasteText} style={{ width: COPY_W, height: CTRL_H }}>粘贴</Button>
+          </w>
+        )}
       </w>
     )
 }
