@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>uback &mdash; quickwin 示例</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    max-width: 760px; margin: 0 auto; padding: 48px 20px;
+    line-height: 1.7;
+  }
+  .back { color: #0969da; text-decoration: none; font-size: .9em; margin-bottom: 8px; display: inline-block; }
+  .back:hover { text-decoration: underline; }
+  h1 { font-size: 1.6em; margin: 0 0 4px; }
+  .sub { color: #666; margin: 0 0 24px; }
+  .shots { margin: 16px 0; }
+  .shots img { display: block; width: 100%; max-width: 520px; border-radius: 6px; margin: 6px 0; }
+  .shot-cap { color: #666; font-size: .85em; text-align: center; margin: -2px 0 12px; }
+  .meta { color: #666; font-size: .85em; margin: 8px 0 16px; }
+  .meta code { font-size: 1em; }
+  .dl {
+    display: inline-block; padding: 9px 22px; border-radius: 8px;
+    background: #2da44e; color: #fff; text-decoration: none; font-weight: 600;
+  }
+  .dl:hover { background: #2c974b; }
+  h3 { font-size: 1.05em; margin: 28px 0 8px; }
+  ul { margin: 8px 0; }
+  code { background: rgba(127,127,127,.1); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+  .note { margin-top: 28px; padding: 12px 16px; background: rgba(127,127,127,.08); border-radius: 8px; font-size: .9em; color: #555; }
+  footer { color: #888; font-size: .8em; margin-top: 32px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+  <a class="back" href="../">&larr; 全部示例</a>
+  <h1>uback（U 盘自动备份）</h1>
+  <p class="sub">
+    插上 U 盘就自动把里面的文件增量备份到电脑，只增不删、绝不动你电脑里的旧文件。
+  </p>
+
+  <div class="shots">
+    <img src="screenshots/win7.webp" alt="Windows 7 下的 uback" loading="lazy">
+    <div class="shot-cap">Windows 7</div>
+    <img src="screenshots/xp.webp" alt="Windows XP 下的 uback" loading="lazy">
+    <div class="shot-cap">Windows XP</div>
+  </div>
+
+  <p class="meta">
+    1.3 MB &middot; 单文件 &middot; 免安装
+    &middot; Windows XP+ (32 / 64 位)
+  </p>
+
+  <a class="dl" href="../uback.exe" download>下载 uback.exe</a>
+
+  <h3>用法</h3>
+  <ul>
+    <li><b>备份：</b>插上 U 盘，在「备份」页勾选这支盘（每台设备一行复选框）。
+        之后每次插入，程序自动把它里面的文件<b>增量</b>复制到电脑，
+        已存在且大小/时间没变的文件直接跳过。</li>
+    <li><b>只增不删：</b>只往电脑里加文件，<b>绝不删除</b>或覆盖成旧版
+        &mdash; U 盘上删掉的文件在备份里保留。</li>
+    <li><b>手动：</b>不想等插入？点「立即导入」立即备份当前插着的盘
+        （无序列号的盘也能这样手动备份）。</li>
+    <li><b>托盘：</b>关窗只是隐藏到托盘，程序继续监视插盘。
+        托盘右键可「暂停 / 恢复自动备份」（与设置页总开关同源）、「退出」。</li>
+    <li><b>开机自启：</b>设置页勾上，开机后常驻后台自动备份。</li>
+  </ul>
+
+  <h3>识别与安全</h3>
+  <ul>
+    <li><b>只认硬件序列号：</b>从 USB 存储描述符读 <code>iSerialNumber</code>，
+        不用盘符/卷标做身份；序列号变了就当作另一支盘，绝不混备份。</li>
+    <li><b>隐私默认：</b>不备份任何盘 &mdash; 每行复选框都要你手动勾。
+        勾选、目标文件夹、总开关都存配置文件，改哪台备份哪台。</li>
+    <li><b>克隆盘警示：</b>同一序列号但容量/卷标变化（读卡器换卡、克隆盘）&rarr;
+        本次不自动导入并提示，避免把另一支盘的内容混进来。</li>
+  </ul>
+
+  <h3>行为细节</h3>
+  <ul>
+    <li><b>目标：</b><code>&lt;桌面&gt;\UsbBackup\&lt;厂商&gt;_&lt;型号&gt;-&lt;序列号哈希&gt;\</code>
+        （忽略 OneDrive 桌面提示；可在设置页改根目录）。</li>
+    <li><b>操作记录：</b>每个设备目录一个 <code>uback.txt</code>，逐文件记
+        「复制 / 失败」，跳过只在汇总行报数；UTF-8 带 BOM，记事本可读；
+        单次明细 5 万行上限、5 MB 轮转 <code>uback.1.txt</code>。</li>
+    <li><b>增量判断：</b>目标已存在且大小、修改时间（FAT 2 秒容差）一致 &rarr; 跳过；
+        否则覆盖复制。保留 U 盘文件的修改时间。</li>
+    <li><b>中断恢复：</b>先写 <code>.part</code> 再原子改名，拔盘/断电不会留下半个文件；
+        中途停止，已完成的部分保留，下次增量续传。</li>
+    <li><b>配置：</b><code>%APPDATA%\uback\config.json</code>（原子写）；
+        全局日志 <code>%APPDATA%\uback\uback.log</code>。</li>
+  </ul>
+
+  <div class="note">
+    <strong>注意：</strong>备份是「单向、只增」的 &mdash; 程序不会删除或回写电脑端文件，
+    也不会把 U 盘文件当「要删除」处理。请确认目标盘有足够空间。
+  </div>
+
+  <footer>
+    每次 push 由 <code>npm run build</code>（tsc + esbuild + brotli embed）自动构建
+    &mdash; <a href="https://github.com/xna00/quickwin-demos">源码在 GitHub</a>。
+  </footer>
+</body>
+</html>

@@ -1,0 +1,16 @@
+<!-- uback exe 图标：蓝底圆角方片 + 白色 U 盘（USB 插头 + 身体）与蓝色对勾（备份完成）
+     图案自绘，不引用第三方图标库 → 无许可/署名义务。
+     XP 不认 PNG 条目，故 gen-icon.mjs 为 16/24/32/48 额外生成 32bpp BMP 条目。
+     改图后跑 node scripts/gen-icon.mjs demos/uback 重新生成 icon.ico -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <!-- 底片：蓝底圆角方片（浅色/深色任务栏与资源管理器下都有对比度） -->
+  <rect x="2" y="2" width="44" height="44" rx="11" fill="#1f6feb"/>
+  <!-- USB 插头（帽） -->
+  <rect x="15" y="7" width="18" height="7" rx="2" fill="#ffffff"/>
+  <!-- U 盘身体 -->
+  <rect x="18.5" y="12" width="11" height="26" rx="2.5" fill="#ffffff"/>
+  <!-- 备份完成对勾（叠加在身体上，蓝） -->
+  <path d="M21.5 27.5 L25 31.5 L31.5 21.5"
+        fill="none" stroke="#1f6feb" stroke-width="3.4"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
