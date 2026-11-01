@@ -14,7 +14,7 @@ import * as gui from 'gui'
 import { bind, WCHAR } from 'quickwin/lib/ffi/bind.js'
 import { NULL } from 'quickwin/lib/ffi/ctype.js'
 import { CreateMutex } from 'quickwin/lib/windows/kernel32.js'
-import { FindWindow, PostQuitMessage, SetForegroundWindow, ShowWindow } from 'quickwin/lib/windows/user32.js'
+import { FindWindow, PostQuitMessage, SendMessage, SetForegroundWindow, ShowWindow } from 'quickwin/lib/windows/user32.js'
 import { Button, CheckBox, PathPicker, ProgressBar, ScrollView, Tab, createRoot } from 'quickwin/lib/react-qw/index.js'
 import type { WEvent } from 'quickwin/lib/msg-registry.js'
 import { ErrorCode, ShowWindowCmd, WindowStyle, WmMsg } from 'quickwin/constants'
@@ -36,6 +36,9 @@ declare global {
 }
 
 const WM_DEVICECHANGE = 0x0219
+const WM_SETICON = 0x0080
+const ICON_BIG = 1
+const ICON_SMALL = 0
 const MUTEX_NAME = 'Local\\uback-singleton'
 const GetLastError = bind('kernel32.dll', 'GetLastError', ' -> u32')
 
@@ -229,6 +232,14 @@ function main(): void {
         onEvent: onRootMsg,
     })
     rootHwnd = root.hwnd
+    // 任务栏大图标：runtime 建类时按 load_app_icon(0,0) 取到 ICO 首条目（16px），
+    // 任务栏会把 16px 放大到 32px（无对勾且发虚）。这里显式设 32px 大图标。
+    const bigIcon = gui.LoadAppIcon(32, 32)
+    if (bigIcon) SendMessage(root.hwnd, WM_SETICON, ICON_BIG, bigIcon)
+    // 标题栏小图标：不设 ICON_SMALL 时系统把 32px 缩进标题栏，
+    // 垂直被裁（顶部插头/底部圆角切掉、右侧描边裂开）。这里显式设 16px 条目。
+    const smallIcon = gui.LoadAppIcon(16, 16)
+    if (smallIcon) SendMessage(root.hwnd, WM_SETICON, ICON_SMALL, smallIcon)
 
     // 4. 托盘
     const trayOk = initTray(root.hwnd)

@@ -22,6 +22,7 @@
 //         screenshots/*.png             ← 从 demos/<name>/screenshots/ 复制
 //       <name>.exe                      ← 从 dist/<name>.exe 复制
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, copyFileSync, cpSync, statSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, join, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliCompressSync, constants as zc } from 'node:zlib'
@@ -92,7 +93,12 @@ for (const d of demos) {
 
     console.log('[2/3] embed ...')
     let exe = readFileSync(EXE_SRC)
-    const iconPath = join(DEMOS_DIR, d, 'icon.ico')
+    // 图标：优先用已提交的 icon.ico；没有则从 icon.svg 现场生成到 dist/
+    let iconPath = join(DEMOS_DIR, d, 'icon.ico')
+    if (!existsSync(iconPath)) {
+        iconPath = join('dist', `${d}.ico`)
+        execFileSync('node', [join('scripts', 'gen-icon.mjs'), join(DEMOS_DIR, d), iconPath], { stdio: 'inherit' })
+    }
     if (existsSync(iconPath)) {
         // resedit 盖图标；必须在嵌 JS 前——resedit 重写 PE 不保留尾部数据
         const plainLen = exe.length

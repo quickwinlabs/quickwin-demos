@@ -1,24 +1,32 @@
 #!/usr/bin/env node
-// 一次性工具：demos/<name>/icon.svg → 多条目 .ico
-// 用法：node scripts/gen-icon.mjs demos/<name>
-// 条目策略：16/24/32/48 用 32bpp BMP（+ AND 掩码，XP 起的系统全认）；64/128/256 用 PNG（Vista+）
-// 小尺寸各自独立渲染（不是拿 48px 缩），托盘/资源管理器不再糊。
-// 产物 icon.ico 随仓库提交；build.ts 只读 icon.ico，CI 不跑本脚本。
-import { readFileSync, writeFileSync } from 'node:fs'
+// demos/<name>/icon.svg → 多条目 .ico（build.ts 在 icon.ico 缺失时也会调用它）
+// 用法：node scripts/gen-icon.mjs demos/<name> [out.ico]   （缺省输出 demos/<name>/icon.ico）
+// 条目策略（最小体积）：16 用 32bpp BMP（XP 只认 BMP，托盘/任务栏小图标）；32/48/256 用 PNG（Vista+）
+// 32px = Win7 任务栏大图标；48px = Explorer 大图标；256px 供高 DPI / 超大图标。
+// 48px BMP 未压缩要 9.6KB，故用 PNG（约 1.2KB）；64/128 系统不主动请求，省略。
+// 各尺寸默认由 icon.svg 缩放；如某尺寸需要专用稿，可放 icon-<size>.svg 覆盖。
+// icon.ico 是构建产物：build.ts 缺失时现场生成到 dist/，仓库不提交。
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Resvg } from '@resvg/resvg-js'
 
 const root = process.argv[2]
 if (!root) {
-    console.error('usage: node scripts/gen-icon.mjs demos/<name>')
+    console.error('usage: node scripts/gen-icon.mjs demos/<name> [out.ico]')
     process.exit(1)
 }
+const out = process.argv[3] || join(root, 'icon.ico')
 
-const BMP_SIZES = [16, 24, 32, 48]   // XP 只认 BMP 条目（且 ≤48）
-const PNG_SIZES = [64, 128, 256]     // Vista+ 认 PNG 条目
+const BMP_SIZES = [16]                   // XP 只认 BMP 条目；16px 覆盖托盘/任务栏小图标
+const PNG_SIZES = [32, 48, 256]          // Vista+ 认 PNG；32=任务栏大图标，48=Explorer 大图标，256=高 DPI
 
 const svg = readFileSync(join(root, 'icon.svg'), 'utf8')
-const render = (size) => new Resvg(svg, { fitTo: { mode: 'width', value: size } }).render()
+// 可选：icon-<size>.svg 覆盖母版（无则用母版缩）
+const svgFor = (size) => {
+    const p = join(root, `icon-${size}.svg`)
+    return existsSync(p) ? readFileSync(p, 'utf8') : svg
+}
+const render = (size) => new Resvg(svgFor(size), { fitTo: { mode: 'width', value: size } }).render()
 
 // 32bpp BMP 条目：BITMAPINFOHEADER(biHeight = 2×h) + BGRA 行（自下而上）+ AND 掩码（全 0，透明靠 alpha）
 function bmpOf(r) {
@@ -71,7 +79,6 @@ entries.forEach(({ size, data }, i) => {
 })
 
 const ico = Buffer.concat([dir, ...entries.map((e) => e.data)])
-const out = join(root, 'icon.ico')
 writeFileSync(out, ico)
 console.log(`${out}: ${entries.map((e) => e.size + 'px').join('/')} ` +
     entries.map((e) => `${e.size}:${e.data.length}B`).join(' ') + ` -> ico ${ico.length}B`)
