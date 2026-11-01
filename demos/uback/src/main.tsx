@@ -91,11 +91,11 @@ function BackupPane() {
                 <PathPicker type="folder" value={st.cfg.destRoot} onChange={onDestRoot} style={{ flexGrow: 1, height: 22 }} />
             </w>
             <w type="STATIC" text="已识别的 U 盘（勾选 = 插入时自动备份）" style={{ height: 18 }} />
-            <ScrollView style={{ flexGrow: 1 }} contentWidth={480} contentHeight={Math.max(rows, 1) * ROW_H + 4}>
+            <ScrollView style={{ flexGrow: 1 }} contentHeight={Math.max(rows, 1) * ROW_H + 4}>
                 {rows === 0 ? (
-                    <w type="STATIC" text="未发现 U 盘（插上后自动识别）" style={{ width: 480, height: ROW_H }} />
+                    <w type="STATIC" text="未发现 U 盘（插上后自动识别）" style={{ alignSelf: 'stretch', height: ROW_H }} />
                 ) : st.devices.map((d) => (
-                    <w type="STATIC" key={d.key} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, width: 480, height: ROW_H }}>
+                    <w type="STATIC" key={d.key} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'stretch', height: ROW_H }}>
                         <CheckBox checked={d.allow} disabled={d.noSerial || job.running} label={rowText(d)}
                             onChange={() => toggleAllow(d.key)} style={{ flexGrow: 1 }} />
                         {!d.connected ? (
