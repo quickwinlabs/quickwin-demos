@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // demos/<name>/icon.svg → 多条目 .ico（build.ts 在 icon.ico 缺失时也会调用它）
 // 用法：node scripts/gen-icon.mjs demos/<name> [out.ico]   （缺省输出 demos/<name>/icon.ico）
-// 条目策略（最小体积）：16 用 32bpp BMP（XP 只认 BMP，托盘/任务栏小图标）；32/48/256 用 PNG（Vista+）
-// 32px = Win7 任务栏大图标；48px = Explorer 大图标；256px 供高 DPI / 超大图标。
-// 48px BMP 未压缩要 9.6KB，故用 PNG（约 1.2KB）；64/128 系统不主动请求，省略。
+// 条目策略（最小体积）：16 用 32bpp BMP（XP 只认 BMP，托盘/任务栏小图标）；32/256 用 PNG（Vista+）
+// 32px = 任务栏大图标 / Explorer 中图标；256px 供高 DPI / 超大图标（48 由 256 缩小替代，质量无损）。
+// 64/128 系统不主动请求，省略。
 // 各尺寸默认由 icon.svg 缩放；如某尺寸需要专用稿，可放 icon-<size>.svg 覆盖。
 // icon.ico 是构建产物：build.ts 缺失时现场生成到 dist/，仓库不提交。
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -18,7 +18,7 @@ if (!root) {
 const out = process.argv[3] || join(root, 'icon.ico')
 
 const BMP_SIZES = [16]                   // XP 只认 BMP 条目；16px 覆盖托盘/任务栏小图标
-const PNG_SIZES = [32, 48, 256]          // Vista+ 认 PNG；32=任务栏大图标，48=Explorer 大图标，256=高 DPI
+const PNG_SIZES = [32, 256]               // Vista+ 认 PNG；32=任务栏大图标，256=高 DPI（48 由 256 缩小）
 
 const svg = readFileSync(join(root, 'icon.svg'), 'utf8')
 // 可选：icon-<size>.svg 覆盖母版（无则用母版缩）
