@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { brotliCompressSync, constants as zc } from 'node:zlib'
 import { build } from 'esbuild'
 import { Data, NtExecutable, NtExecutableResource, Resource } from 'resedit'
+import { APP_ICON_ID } from 'quickwin/lib/consts.js'
 
 // ── 枚举 demos ──
 // 本脚本目录（alias 需要绝对路径：esbuild 把 alias 值当模块名解析，相对路径无效）
@@ -107,7 +108,7 @@ for (const d of demos) {
         const iconFile = Data.IconFile.from(readFileSync(iconPath))
         Resource.IconGroupEntry.replaceIconsForResource(
             res.entries,
-            101,       // RT_ICON_GROUP ID（底座无现成图标，资源不存在时自动追加）
+            APP_ICON_ID, // RT_ICON_GROUP ID（底座无现成图标，资源不存在时自动追加）
             1033,      // en-US
             iconFile.icons.map((i) => i.data),
         )

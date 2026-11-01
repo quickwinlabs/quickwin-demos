@@ -37,6 +37,7 @@ import {
 } from 'quickwin/lib/windows/user32.js'
 import { CreateSolidBrush, SetBkMode, SetTextColor, SelectObject, CreateFontIndirect, GetTextExtentPoint32, GetDeviceCaps, DeleteObject } from 'quickwin/lib/windows/gdi32.js'
 import { GetModuleFileName } from 'quickwin/lib/windows/kernel32.js'
+import { loadAppIcon } from 'quickwin/lib/app-icon.js'
 import { ShellNotifyIcon } from 'quickwin/lib/windows/shell32.js'
 import { RECT, PAINTSTRUCT, LOGFONTW, SIZE, POINT, NOTIFYICONDATAW } from 'quickwin/lib/windows/structs.js'
 import { RegCloseKey, RegCreateKeyEx, RegOpenKeyEx, RegQueryValueEx, RegSetValueEx } from 'quickwin/lib/windows/advapi32.js'
@@ -668,8 +669,8 @@ function keepTopmost() {
     }
 }
 
-let hIcon: any = gui.LoadAppIcon()
-if (!hIcon) hIcon = LoadImageOrdinal(NULL, IDI.APPLICATION, ImageType.ICON, 0, 0, LoadImageFlag.SHARED)
+let hIcon: any = loadAppIcon(16, 16)
+if (!hIcon) hIcon = LoadImageOrdinal(NULL, IDI.APPLICATION, ImageType.ICON, 16, 16, LoadImageFlag.SHARED)
 if (hIcon) {
     ShellNotifyIcon(NotifyIconCmd.ADD, {
         cbSize: NOTIFYICONDATAW.size,

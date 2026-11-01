@@ -1,6 +1,7 @@
 // tray —— 托盘常驻（ShellNotifyIcon + 右键菜单；「暂停/恢复」与设置页总开关同源持久化）
 import * as gui from 'gui'
 import { NULL, PtrArrayBuffer } from 'quickwin/lib/ffi/ctype.js'
+import { loadAppIcon } from 'quickwin/lib/app-icon.js'
 import {
     AppendMenu, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadImageOrdinal,
     PostQuitMessage, SetForegroundWindow, ShowWindow, TrackPopupMenu,
@@ -40,7 +41,7 @@ function trayData(): Record<string, unknown> {
 /** 添加托盘图标；失败 → false（不影响主功能） */
 export function initTray(h: gui.HWND): boolean {
     hwnd = h
-    hIcon = gui.LoadAppIcon(16, 16) ||
+    hIcon = loadAppIcon(16, 16) ||
         LoadImageOrdinal(NULL, IDI.APPLICATION, ImageType.ICON, 16, 16, LoadImageFlag.SHARED)
     if (!hIcon) return false
     return ShellNotifyIcon(NotifyIconCmd.ADD, trayData()) !== 0
