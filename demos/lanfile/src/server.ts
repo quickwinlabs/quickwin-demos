@@ -109,7 +109,7 @@ textarea{width:100%;box-sizing:border-box;margin:8px 0 0;padding:8px;border:1px 
   <b>文字同步</b>
   <p class="hint">电脑端「文字」页签里的内容，这里实时同步（只保留最新一条）</p>
   <div id="tcur" class="tbox">${textBody}</div>
-  <button id="tcopy" disabled>复制</button>
+  <button id="tcopy"${curText ? '' : ' disabled'}>复制</button>
   <textarea id="tsend" rows="3" maxlength="60000" placeholder="输入要发送到电脑的文字"></textarea>
   <button id="tgo">发送到电脑</button>
   <div id="tstatus"></div>
@@ -253,6 +253,7 @@ function fallbackCopy(t) {
   document.body.removeChild(ta)
   tstatus.textContent = ok ? '已复制' : '复制失败，请长按选择'
 }
+renderText(tcur.querySelector('.empty') ? '' : tcur.textContent)
 pollText()
 setInterval(pollText, 2000)
 document.addEventListener('visibilitychange', function () { if (!document.hidden) pollText() })
