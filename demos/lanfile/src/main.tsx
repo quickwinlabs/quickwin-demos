@@ -684,7 +684,7 @@ function App({ addrs, initIdx, port, uploadDir }: {
         ) : (
           <w key="text" type="STATIC"
              ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
-             style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
+             style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: GAP, height: CTRL_H }}>
             <Button onClick={onCopyText} style={{ width: COPY_W, height: CTRL_H }}>复制</Button>
             <Button onClick={onPasteText} style={{ width: COPY_W, height: CTRL_H }}>粘贴</Button>
           </w>
