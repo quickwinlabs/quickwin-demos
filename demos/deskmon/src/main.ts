@@ -33,7 +33,7 @@ import {
     SystemParametersInfo, BeginPaint, EndPaint, DrawText, GetDC, ReleaseDC, IsWindowVisible,
     InvalidateRect, SetWindowPos, GetWindowRect, ShowWindow, GetWindowLongPtr, SetWindowLongPtr,
     SetForegroundWindow, GetWindow, PostQuitMessage,
-    CreatePopupMenu, AppendMenu, TrackPopupMenu, DestroyMenu, GetCursorPos, LoadImageOrdinal,
+    CreatePopupMenu, AppendMenu, TrackPopupMenu, DestroyMenu, GetCursorPos, LoadImage,
 } from 'quickwin/lib/windows/user32.js'
 import { CreateSolidBrush, SetBkMode, SetTextColor, SelectObject, CreateFontIndirect, GetTextExtentPoint32, GetDeviceCaps, DeleteObject } from 'quickwin/lib/windows/gdi32.js'
 import { GetModuleFileName } from 'quickwin/lib/windows/kernel32.js'
@@ -670,7 +670,7 @@ function keepTopmost() {
 }
 
 let hIcon: any = loadAppIcon(16, 16)
-if (!hIcon) hIcon = LoadImageOrdinal(NULL, IDI.APPLICATION, ImageType.ICON, 16, 16, LoadImageFlag.SHARED)
+if (!hIcon) hIcon = LoadImage(NULL, IDI.APPLICATION, ImageType.ICON, 16, 16, LoadImageFlag.SHARED)
 if (hIcon) {
     ShellNotifyIcon(NotifyIconCmd.ADD, {
         cbSize: NOTIFYICONDATAW.size,

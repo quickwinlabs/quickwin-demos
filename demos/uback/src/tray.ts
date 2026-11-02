@@ -3,7 +3,7 @@ import * as gui from 'gui'
 import { NULL, PtrArrayBuffer } from 'quickwin/lib/ffi/ctype.js'
 import { loadAppIcon } from 'quickwin/lib/app-icon.js'
 import {
-    AppendMenu, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadImageOrdinal,
+    AppendMenu, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadImage,
     PostQuitMessage, SetForegroundWindow, ShowWindow, TrackPopupMenu,
 } from 'quickwin/lib/windows/user32.js'
 import { ShellNotifyIcon } from 'quickwin/lib/windows/shell32.js'
@@ -42,7 +42,7 @@ function trayData(): Record<string, unknown> {
 export function initTray(h: gui.HWND): boolean {
     hwnd = h
     hIcon = loadAppIcon(16, 16) ||
-        LoadImageOrdinal(NULL, IDI.APPLICATION, ImageType.ICON, 16, 16, LoadImageFlag.SHARED)
+        LoadImage(NULL, IDI.APPLICATION, ImageType.ICON, 16, 16, LoadImageFlag.SHARED)
     if (!hIcon) return false
     return ShellNotifyIcon(NotifyIconCmd.ADD, trayData()) !== 0
 }
