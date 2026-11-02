@@ -48,7 +48,7 @@ import { bind, WCHAR } from 'quickwin/lib/ffi/bind.js'
 import { struct } from 'quickwin/lib/ffi/struct.js'
 import { NULL, PtrArrayBuffer, type MaybePtr, type Ptr } from 'quickwin/lib/ffi/ctype.js'
 import type { WEvent } from 'quickwin/lib/msg-registry.js'
-import { Button, CheckBox, ComboBox, ListBox, PathPicker, Tab, createRoot } from 'quickwin/lib/react-qw/index.js'
+import { Button, CheckBox, ComboBox, Link, ListBox, PathPicker, Tab, createRoot } from 'quickwin/lib/react-qw/index.js'
 import {
     BeginPaint, CloseClipboard, EmptyClipboard, EndPaint, FillRect, FindWindow,
     GetClientRect, GetClipboardData, GetWindowText, GetWindowTextLength,
@@ -97,7 +97,6 @@ const PAD = 12
 const GAP = 6
 const CTRL_H = 26
 const QR_W = 176      // 左侧 QR 面板宽
-const CHK_W = 80      // ☑右键菜单（含勾选块 + 文字 + 边距）
 const COPY_W = 52     // 复制 / 已复制
 const ADD_W = 66      // 添加文件
 const OPEN_W = 52     // 打开
@@ -106,11 +105,14 @@ const TIP_X = 10
 const TIP_DY = 3
 
 // ── 诊断日志：%TEMP%\lanfile.log（全程静默，deskmon 手法）──
+function logPath(): string | null {
+    const dir = std.getenv('TEMP')
+    return dir ? dir.replace(/[\\/]+$/, '') + '\\lanfile.log' : null
+}
 function log(msg: string) {
     try {
-        const dir = std.getenv('TEMP')
-        if (!dir) return
-        const p = dir.replace(/[\\/]+$/, '') + '\\lanfile.log'
+        const p = logPath()
+        if (!p) return
         const fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         if (fd === null || fd < 0) return
         const txt = (Date.now() / 1000).toFixed(3) + ' ' + msg + '\r\n'
@@ -424,6 +426,24 @@ function addFiles(): void {
 function openUploadDir(): void {
     ShellExecute(hwndMain ?? NULL, 'open', uploadAbs, NULL, NULL, 1)
 }
+// 用系统默认程序打开文件（配置 / 日志 / 在线说明走同一套）
+function openPath(p: string | null): void {
+    if (!p) return
+    ShellExecute(hwndMain ?? NULL, 'open', p, NULL, NULL, 1)
+}
+// 清除配置与诊断日志：只删文件，内存状态保持到重启（提示里写明）
+function clearFiles(): void {
+    const r = MessageBox(hwndMain ?? NULL,
+        '将删除 %TEMP%\\lanfile.json 和 lanfile.log，重启 lanfile 后恢复默认设置。\n\n继续？',
+        'lanfile', MbFlag.YESNO | MbFlag.ICONWARNING)
+    if (r !== MbResult.YES) return
+    for (const p of [cfgPath(), logPath()]) {
+        if (!p) continue
+        try { os.remove(p) } catch { /* 文件不存在则忽略 */ }
+    }
+    MessageBox(hwndMain ?? NULL, '已清除。重启 lanfile 后生效。',
+        'lanfile', MbFlag.OK | MbFlag.ICONINFORMATION)
+}
 // 注册表写入失败则保持原态（勾选框是 AUTOCHECKBOX，视觉已翻过；失败时下次启动回滚）
 function toggleCtx(want: boolean): boolean {
     if (!ctxmenu.setEnabled(want)) return false
@@ -591,7 +611,8 @@ function App({ addrs, initIdx, port, uploadDir }: {
     const [ctx, setCtx] = useState(ctxOn)
     const [upDir, setUpDir] = useState(uploadDir)
     const [copied, setCopied] = useState(false)
-    const [tab, setTab] = useState(0)          // 右侧页签：0 文件 / 1 文字
+    const [tab, setTab] = useState(0)          // 内层页签：0 文件 / 1 文字
+    const [topTab, setTopTab] = useState(0)    // 顶层页签：0 传输 / 1 设置
 
     // 下拉项 = 完整 URL（手机要输的就是它）。memo 保持数组引用稳定：ComboBox 的
     // effect 以 [items] 为依赖，每次渲染传新数组会让它 RESETCONTENT 重灌一遍
@@ -646,11 +667,12 @@ function App({ addrs, initIdx, port, uploadDir }: {
         { title: '文字', content: <TextPane /> },
     ], [items])
 
-    return (
+    // 传输页：行1 地址 + 复制 / 行2 QR + 文件·文字 / 行3 随子页签切换的按钮行
+    const transferPane = (
       <w type="STATIC"
          ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
-         style={{ flexDirection: 'column', padding: PAD, gap: GAP, flexGrow: 1 }}>
-        {/* 行1：地址（网卡下拉，选中项即地址与 QR 源）+ 复制 + ☑右键菜单 */}
+         style={{ flexDirection: 'column', gap: GAP, flexGrow: 1 }}>
+        {/* 行1：地址（网卡下拉，选中项即地址与 QR 源）+ 复制 */}
         <w type="STATIC"
            ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
            style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
@@ -659,9 +681,6 @@ function App({ addrs, initIdx, port, uploadDir }: {
           <Button onClick={onCopy} style={{ width: COPY_W, height: CTRL_H }}>
             {copied ? '已复制' : '复制'}
           </Button>
-          <CheckBox label='右键菜单' checked={ctx}
-                    onChange={(v) => { if (toggleCtx(v)) setCtx(v) }}
-                    style={{ width: CHK_W, height: CTRL_H }} />
         </w>
         {/* 行2：左 QR 面板 / 右侧页签（文件列表 / 共享文字），填满剩余高度 */}
         <w type="STATIC"
@@ -689,6 +708,55 @@ function App({ addrs, initIdx, port, uploadDir }: {
             <Button onClick={onPasteText} style={{ width: COPY_W, height: CTRL_H }}>粘贴</Button>
           </w>
         )}
+      </w>
+    )
+
+    // 设置页：右键菜单开关 / 配置文件·日志入口 / 关于 / 清除
+    const settingsPane = (
+      <w type="STATIC"
+         ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
+         style={{ flexDirection: 'column', gap: GAP, flexGrow: 1 }}>
+        <CheckBox label='在资源管理器右键菜单中显示' checked={ctx}
+                  onChange={(v) => { if (toggleCtx(v)) setCtx(v) }}
+                  style={{ height: CTRL_H }} />
+        <w type="STATIC"
+           ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
+           style={{ flexDirection: 'row', alignItems: 'center', gap: GAP, height: CTRL_H }}>
+          <w type="STATIC" text='配置文件：%TEMP%\lanfile.json'
+             style={{ flexGrow: 1, height: CTRL_H }} />
+          <Button onClick={() => openPath(cfgPath())} style={{ width: OPEN_W, height: CTRL_H }}>打开</Button>
+        </w>
+        <w type="STATIC"
+           ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
+           style={{ flexDirection: 'row', alignItems: 'center', gap: GAP, height: CTRL_H }}>
+          <w type="STATIC" text='诊断日志：%TEMP%\lanfile.log'
+             style={{ flexGrow: 1, height: CTRL_H }} />
+          <Button onClick={() => openPath(logPath())} style={{ width: OPEN_W, height: CTRL_H }}>打开</Button>
+        </w>
+        <Link href='https://quickwinlabs.github.io/quickwin-demos/lanfile/'
+              onClick={(url) => ShellExecute(hwndMain ?? NULL, 'open', url, NULL, NULL, 1)}
+              style={{ height: 18 }}>关于 lanfile</Link>
+        <w type="STATIC" style={{ flexGrow: 1 }} />
+        <w type="STATIC"
+           ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
+           style={{ flexDirection: 'row', height: CTRL_H }}>
+          <Button onClick={clearFiles} style={{ width: 132, height: CTRL_H }}>清除配置与日志</Button>
+        </w>
+      </w>
+    )
+
+    // 顶层页签：传输 / 设置
+    const topTabs = [
+        { title: '传输', content: transferPane },
+        { title: '设置', content: settingsPane },
+    ]
+
+    return (
+      <w type="STATIC"
+         ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
+         style={{ flexDirection: 'column', padding: PAD, flexGrow: 1 }}>
+        <Tab tabs={topTabs} selectedIndex={topTab} onChange={setTopTab}
+             style={{ flexGrow: 1 }} />
       </w>
     )
 }
