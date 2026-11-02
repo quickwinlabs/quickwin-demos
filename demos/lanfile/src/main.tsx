@@ -99,7 +99,8 @@ const CTRL_H = 26
 const QR_W = 176      // 左侧 QR 面板宽
 const COPY_W = 52     // 复制 / 已复制
 const ADD_W = 66      // 添加文件
-const OPEN_W = 52     // 打开
+const OPEN_DIR_W = 110  // 打开上传文件夹
+const OPEN_FOLDER_W = 80 // 打开文件夹
 const TIP_H = 20
 const TIP_X = 10
 const TIP_DY = 3
@@ -426,10 +427,15 @@ function addFiles(): void {
 function openUploadDir(): void {
     ShellExecute(hwndMain ?? NULL, 'open', uploadAbs, NULL, NULL, 1)
 }
-// 用系统默认程序打开文件（配置 / 日志 / 在线说明走同一套）
-function openPath(p: string | null): void {
+// 打开所在文件夹并选中文件；文件不存在时 /select 会退到用户目录，改为直接打开父目录
+function openInFolder(p: string | null): void {
     if (!p) return
-    ShellExecute(hwndMain ?? NULL, 'open', p, NULL, NULL, 1)
+    const [, err] = os.stat(p)
+    if (err !== 0) {
+        ShellExecute(hwndMain ?? NULL, 'open', p.replace(/[\\/][^\\/]+$/, ''), NULL, NULL, 1)
+        return
+    }
+    ShellExecute(hwndMain ?? NULL, 'open', 'explorer.exe', '/select,"' + p + '"', NULL, 1)
 }
 // 清除配置与诊断日志：只删文件，内存状态保持到重启（提示里写明）
 function clearFiles(): void {
@@ -694,11 +700,9 @@ function App({ addrs, initIdx, port, uploadDir }: {
         {tab === 0 ? (
           <w key="files" type="STATIC"
              ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
-             style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
+             style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: GAP, height: CTRL_H }}>
             <Button onClick={addFiles} style={{ width: ADD_W, height: CTRL_H }}>添加文件</Button>
-            <PathPicker key={upDir} type="folder" value={upDir} onChange={onUpDir}
-                        title='选择上传保存目录' style={{ flexGrow: 1, height: CTRL_H }} />
-            <Button onClick={openUploadDir} style={{ width: OPEN_W, height: CTRL_H }}>打开</Button>
+            <Button onClick={openUploadDir} style={{ width: OPEN_DIR_W, height: CTRL_H }}>打开上传文件夹</Button>
           </w>
         ) : (
           <w key="text" type="STATIC"
@@ -716,6 +720,9 @@ function App({ addrs, initIdx, port, uploadDir }: {
       <w type="STATIC"
          ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
          style={{ flexDirection: 'column', padding: PAD, gap: GAP, flexGrow: 1 }}>
+        <w type="STATIC" text='上传保存目录' style={{ height: 18 }} />
+        <PathPicker key={upDir} type="folder" value={upDir} onChange={onUpDir}
+                    title='选择上传保存目录' style={{ height: CTRL_H }} />
         <CheckBox label='在资源管理器右键菜单中显示' checked={ctx}
                   onChange={(v) => { if (toggleCtx(v)) setCtx(v) }}
                   style={{ height: CTRL_H }} />
@@ -724,14 +731,14 @@ function App({ addrs, initIdx, port, uploadDir }: {
            style={{ flexDirection: 'row', alignItems: 'center', gap: GAP, height: CTRL_H }}>
           <w type="STATIC" text='配置文件：%TEMP%\lanfile.json'
              style={{ flexGrow: 1, height: CTRL_H }} />
-          <Button onClick={() => openPath(cfgPath())} style={{ width: OPEN_W, height: CTRL_H }}>打开</Button>
+          <Button onClick={() => openInFolder(cfgPath())} style={{ width: OPEN_FOLDER_W, height: CTRL_H }}>打开文件夹</Button>
         </w>
         <w type="STATIC"
            ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
            style={{ flexDirection: 'row', alignItems: 'center', gap: GAP, height: CTRL_H }}>
           <w type="STATIC" text='诊断日志：%TEMP%\lanfile.log'
              style={{ flexGrow: 1, height: CTRL_H }} />
-          <Button onClick={() => openPath(logPath())} style={{ width: OPEN_W, height: CTRL_H }}>打开</Button>
+          <Button onClick={() => openInFolder(logPath())} style={{ width: OPEN_FOLDER_W, height: CTRL_H }}>打开文件夹</Button>
         </w>
         <Link href='https://quickwinlabs.github.io/quickwin-demos/lanfile/'
               onClick={(url) => ShellExecute(hwndMain ?? NULL, 'open', url, NULL, NULL, 1)}
