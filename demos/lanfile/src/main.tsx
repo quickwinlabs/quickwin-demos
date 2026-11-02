@@ -671,7 +671,7 @@ function App({ addrs, initIdx, port, uploadDir }: {
     const transferPane = (
       <w type="STATIC"
          ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
-         style={{ flexDirection: 'column', gap: GAP, flexGrow: 1 }}>
+         style={{ flexDirection: 'column', padding: PAD, gap: GAP, flexGrow: 1 }}>
         {/* 行1：地址（网卡下拉，选中项即地址与 QR 源）+ 复制 */}
         <w type="STATIC"
            ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
@@ -715,7 +715,7 @@ function App({ addrs, initIdx, port, uploadDir }: {
     const settingsPane = (
       <w type="STATIC"
          ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
-         style={{ flexDirection: 'column', gap: GAP, flexGrow: 1 }}>
+         style={{ flexDirection: 'column', padding: PAD, gap: GAP, flexGrow: 1 }}>
         <CheckBox label='在资源管理器右键菜单中显示' checked={ctx}
                   onChange={(v) => { if (toggleCtx(v)) setCtx(v) }}
                   style={{ height: CTRL_H }} />
@@ -754,7 +754,7 @@ function App({ addrs, initIdx, port, uploadDir }: {
     return (
       <w type="STATIC"
          ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
-         style={{ flexDirection: 'column', padding: PAD, flexGrow: 1 }}>
+         style={{ flexDirection: 'column', flexGrow: 1 }}>
         <Tab tabs={topTabs} selectedIndex={topTab} onChange={setTopTab}
              style={{ flexGrow: 1 }} />
       </w>
