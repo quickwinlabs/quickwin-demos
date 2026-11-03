@@ -512,9 +512,11 @@ function fwText(st: FirewallStatus | null): string {
     return prof !== '' ? base + '（' + prof + '网络）' : base
 }
 
-/** 打开 Windows 防火墙设置（XP 起都有 firewall.cpl） */
+/** 打开 Windows 防火墙设置。不能直接 ShellExecute firewall.cpl：Win11 上该扩展名
+ *  无关联（返回 31 = SE_ERR_NOASSOC），什么都不会发生；交给 control.exe 代开才通用
+ *  （XP 起都有 control.exe 且认 .cpl 参数）。 */
 function openFirewallSettings(): void {
-    ShellExecute(hwndMain ?? NULL, 'open', 'firewall.cpl', NULL, NULL, 1)
+    ShellExecute(hwndMain ?? NULL, 'open', 'control.exe', 'firewall.cpl', NULL, 1)
 }
 
 // ── 剪贴板：CF_UNICODETEXT，GlobalAlloc 拿块 + RtlMoveMemory 灌数据（与 test_sysinfo 同款）──
