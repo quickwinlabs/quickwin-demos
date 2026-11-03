@@ -66,10 +66,10 @@ import { GetOpenFileName } from 'quickwin/lib/windows/comdlg32.js'
 import { ShellExecute } from 'quickwin/lib/windows/shell32.js'
 import { OPENFILENAMEW, PAINTSTRUCT, RECT } from 'quickwin/lib/windows/structs.js'
 import { createSystemDpiFont, getScaleFactor } from 'quickwin/lib/dpi.js'
-import { allowApp, queryFirewall } from 'quickwin/lib/netfw.js'
+import { allowApp, queryFirewall, type FirewallStatus } from 'quickwin/lib/netfw.js'
 import {
-    BackgroundMode, EditStyle, ErrorCode, MbFlag, MbResult, OpenFileNameFlag, RasterOp,
-    ShowWindowCmd, WindowStyle, WmMsg,
+    BackgroundMode, EditStyle, ErrorCode, MbFlag, MbResult, NetFwProfile, OpenFileNameFlag,
+    RasterOp, ShowWindowCmd, WindowStyle, WmMsg,
 } from 'quickwin/constants'
 
 // 消费方声明合并：WM_COPYDATA 是 lanfile 特有的单实例转发消息（框架注册表不预填），
@@ -101,6 +101,8 @@ const COPY_W = 52     // 复制 / 已复制
 const ADD_W = 66      // 添加文件
 const OPEN_DIR_W = 110  // 打开上传文件夹
 const OPEN_FOLDER_W = 80 // 打开文件夹
+const FW_ALLOW_W = 76    // 一键放行 / 放行中…
+const FW_SET_W = 110     // 打开防火墙设置
 const TIP_H = 20
 const TIP_X = 10
 const TIP_DY = 3
@@ -470,7 +472,8 @@ function checkFirewall(exe: string): void {
         // hwndMain 建窗后才进这里；槽位不收 JS null，未建窗时给 NULL（= 无属主窗）
         const r = MessageBox(hwndMain ?? NULL,
             'Windows 防火墙正在拦截入站连接，手机可能打不开这个页面。\n\n'
-            + '是否现在为本程序添加防火墙放行规则？（会弹出管理员确认）',
+            + '是否现在为本程序添加防火墙放行规则？（会弹出管理员确认）\n'
+            + '也可以稍后在「设置」页点「一键放行」。',
             'lanfile', MbFlag.YESNO | MbFlag.ICONQUESTION)
         if (r !== MbResult.YES) return
         allowApp(exe, hwndMain ?? NULL)
@@ -493,6 +496,25 @@ function checkFirewall(exe: string): void {
     } catch (e) {
         log('firewall check err: ' + e)
     }
+}
+
+/** 防火墙状态 → 设置页显示的文字（含当前网络配置文件，公用网络最易被拦） */
+function fwText(st: FirewallStatus | null): string {
+    if (!st) return '未检查'
+    if (!st.checked) return '无法检测（XP 或系统不支持）'
+    if (!st.firewallOn) return '未开启'
+    const prof = [
+        (st.currentProfiles & NetFwProfile.DOMAIN) !== 0 ? '域' : '',
+        (st.currentProfiles & NetFwProfile.PRIVATE) !== 0 ? '专用' : '',
+        (st.currentProfiles & NetFwProfile.PUBLIC) !== 0 ? '公用' : '',
+    ].filter((s) => s !== '').join('/')
+    const base = st.allowed ? '已放行' : '已开启，但本程序无放行规则'
+    return prof !== '' ? base + '（' + prof + '网络）' : base
+}
+
+/** 打开 Windows 防火墙设置（XP 起都有 firewall.cpl） */
+function openFirewallSettings(): void {
+    ShellExecute(hwndMain ?? NULL, 'open', 'firewall.cpl', NULL, NULL, 1)
 }
 
 // ── 剪贴板：CF_UNICODETEXT，GlobalAlloc 拿块 + RtlMoveMemory 灌数据（与 test_sysinfo 同款）──
@@ -609,8 +631,8 @@ function TextPane() {
 }
 
 // ── 界面 ──
-function App({ addrs, initIdx, port, uploadDir }: {
-    addrs: string[]; initIdx: number; port: number; uploadDir: string
+function App({ addrs, initIdx, port, uploadDir, exe }: {
+    addrs: string[]; initIdx: number; port: number; uploadDir: string; exe: string
 }) {
     const [idx, setIdx] = useState(initIdx)
     const [items, setItems] = useState<string[]>(shareItems)
@@ -619,6 +641,8 @@ function App({ addrs, initIdx, port, uploadDir }: {
     const [copied, setCopied] = useState(false)
     const [tab, setTab] = useState(0)          // 内层页签：0 文件 / 1 文字
     const [topTab, setTopTab] = useState(0)    // 顶层页签：0 传输 / 1 设置
+    const [fw, setFw] = useState<FirewallStatus | null>(null)
+    const [fwBusy, setFwBusy] = useState(false)
 
     // 下拉项 = 完整 URL（手机要输的就是它）。memo 保持数组引用稳定：ComboBox 的
     // effect 以 [items] 为依赖，每次渲染传新数组会让它 RESETCONTENT 重灌一遍
@@ -661,6 +685,27 @@ function App({ addrs, initIdx, port, uploadDir }: {
         const t = readClipboardText()
         if (t !== null) texts.set(t)
     }
+    // 防火墙：切到「设置」页时查一次；放行后轮询复查（netsh 在提权进程里异步生效）
+    const refreshFw = (): void => {
+        try { setFw(queryFirewall(exe)) } catch { setFw(null) }
+    }
+    const canAllowFw = fw !== null && fw.checked && fw.firewallOn && !fw.allowed && !fwBusy
+    const onAllowFw = (): void => {
+        if (!canAllowFw) return
+        setFwBusy(true)
+        if (!allowApp(exe, hwndMain ?? NULL)) { setFwBusy(false); return }
+        let tries = 0
+        const poll = (): void => {
+            let st: FirewallStatus | null = null
+            try { st = queryFirewall(exe) } catch { /* 查询失败按未放行显示 */ }
+            setFw(st)
+            if (!st || st.allowed || !st.checked || !st.firewallOn) { setFwBusy(false); return }
+            if (++tries < 10) { setTimeout(poll, 500); return }
+            setFwBusy(false)
+        }
+        setTimeout(poll, 500)
+    }
+    useEffect(() => { if (topTab === 1) refreshFw() }, [topTab])
 
     useEffect(() => {
         setItems(itemsOf())               // 对齐 render 前到达的 COPYDATA
@@ -726,6 +771,17 @@ function App({ addrs, initIdx, port, uploadDir }: {
         <CheckBox label='在资源管理器右键菜单中显示' checked={ctx}
                   onChange={(v) => { if (toggleCtx(v)) setCtx(v) }}
                   style={{ height: CTRL_H }} />
+        <w type="STATIC" text={'防火墙：' + fwText(fw)} style={{ height: 18 }} />
+        <w type="STATIC"
+           ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
+           style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
+          <Button onClick={refreshFw} style={{ width: COPY_W, height: CTRL_H }}>检查</Button>
+          <Button onClick={onAllowFw} disabled={!canAllowFw}
+                  style={{ width: FW_ALLOW_W, height: CTRL_H }}>
+            {fwBusy ? '放行中…' : '一键放行'}
+          </Button>
+          <Button onClick={openFirewallSettings} style={{ width: FW_SET_W, height: CTRL_H }}>打开防火墙设置</Button>
+        </w>
         <w type="STATIC"
            ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
            style={{ flexDirection: 'row', alignItems: 'center', gap: GAP, height: CTRL_H }}>
@@ -853,7 +909,7 @@ function main(): void {
 
     // 5. 渲染 + 显示
     root.render(<App addrs={lan.all} initIdx={initIdx} port={port}
-                uploadDir={uploadAbs} />)
+                uploadDir={uploadAbs} exe={exe} />)
     print('lanfile: http://' + lan.all[initIdx] + ':' + port + '/ uploads=' + uploadAbs)
 
     // 6. 防火墙：窗口显示后再提示，避免模态框挂在不可见窗口上
