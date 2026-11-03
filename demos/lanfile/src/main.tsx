@@ -92,7 +92,7 @@ const COPYDATA_MAGIC = 0x1A6F1EC   // WM_COPYDATA dwData 自定义魔数（lanfi
 // ── 布局（基准像素；flex 样式由 reconciler 乘 scaleFactor，GDI 处自己乘 S）──
 const S = getScaleFactor()
 const WIN_W = Math.round(400 * S)
-const WIN_H = Math.round(360 * S)
+const WIN_H = Math.round(384 * S)   // 设置页多了一行防火墙，底部「清除配置与日志」需要留出内边距
 const PAD = 12
 const GAP = 6
 const CTRL_H = 26
