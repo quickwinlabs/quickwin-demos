@@ -728,18 +728,37 @@ function App({ addrs, initIdx, port, uploadDir, exe }: {
     }
     useEffect(() => { if (topTab === 1) refreshFw() }, [topTab])
 
-    // 手机传来文件时的桌面提示：默认关闭，开关状态直接读模块级 cfg（闭包始终拿最新值）
+    // 手机传来文件时的桌面提示：提示音默认关闭（设置页开关，读模块级 cfg）。
+    // 接收完成用主窗口内的非阻塞通知条——模态 MessageBox 会阻塞 HTTP 事件循环，
+    // 弹窗期间手机端上传/下载都会挂起，反而造成「上传失败」的误判。
+    const [notice, setNotice] = useState(0)   // 0 = 无通知；>0 = 已接收文件数
+    const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     useEffect(() => {
-        let last = 0
+        let last = 0          // 提示音合并：1 秒内只响一声
+        let pending = 0       // 接收完成通知合并：最后一笔上传后 1 秒再弹
+        let timer: ReturnType<typeof setTimeout> | null = null
         recv.onUpload(() => {
-            if (cfg.beep !== 1) return
-            // 批量上传会逐个回调：1 秒内合并成一声，避免连环响
-            const now = Date.now()
-            if (now - last < 1000) return
-            last = now
-            MessageBeep(MbFlag.ICONASTERISK)
+            pending++
+            if (cfg.beep === 1) {
+                const now = Date.now()
+                if (now - last >= 1000) { last = now; MessageBeep(MbFlag.ICONASTERISK) }
+            }
+            if (timer) clearTimeout(timer)
+            timer = setTimeout(() => {
+                const n = pending
+                pending = 0
+                if (n <= 0) return
+                setNotice(n)
+                // 8 秒后自动消失；新通知会重置
+                if (noticeTimer.current) clearTimeout(noticeTimer.current)
+                noticeTimer.current = setTimeout(() => setNotice(0), 8000)
+            }, 1000)
         })
-        return () => recv.onUpload(null)
+        return () => {
+            recv.onUpload(null)
+            if (timer) clearTimeout(timer)
+            if (noticeTimer.current) clearTimeout(noticeTimer.current)
+        }
     }, [])
 
     useEffect(() => {
@@ -768,6 +787,17 @@ function App({ addrs, initIdx, port, uploadDir, exe }: {
             {copied ? '已复制' : '复制'}
           </Button>
         </w>
+        {/* 接收完成通知条：非阻塞，8 秒自动消失；「打开传输文件夹」直达保存目录 */}
+        {notice > 0 && (
+          <w key="notice" type="STATIC"
+             ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
+             style={{ flexDirection: 'row', gap: GAP, height: CTRL_H }}>
+            <w type="STATIC" text={`已成功接收 ${notice} 个文件`}
+               style={{ flexGrow: 1, height: CTRL_H }} />
+            <Button onClick={() => { openUploadDir(); setNotice(0) }}
+                    style={{ width: OPEN_DIR_W, height: CTRL_H }}>打开传输文件夹</Button>
+          </w>
+        )}
         {/* 行2：左 QR 面板 / 右侧页签（文件列表 / 共享文字），填满剩余高度 */}
         <w type="STATIC"
            ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}

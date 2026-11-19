@@ -176,6 +176,28 @@ btn.onclick = function () {
   }
   next()
 }
+// 接收提示音：电脑端文件下载完成时「叮」一声（Web Audio，1 秒合并）。
+// 单个文件点链接 / 批量「下载选中」都走 <a href="/f/...">，委托监听即可。
+var actx = null, lastBeep = 0
+function beep() {
+  var now = Date.now()
+  if (now - lastBeep < 1000) return
+  lastBeep = now
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)()
+    var o = actx.createOscillator(), g = actx.createGain()
+    o.connect(g); g.connect(actx.destination)
+    o.frequency.value = 880
+    g.gain.value = 0.2
+    o.start()
+    o.stop(actx.currentTime + 0.15)
+  } catch (e) { /* 无音频环境（如静音浏览器）忽略 */ }
+}
+document.addEventListener('click', function (ev) {
+  var t = ev.target
+  var a = t && t.closest ? t.closest('a[href^="/f/"]') : null
+  if (a) beep()
+})
 // 批量下载：勾选 → 逐个 <a download> 触发（浏览器询问"允许下载多个文件"）
 var boxes = [], selAll = null, dlSel = null
 function refreshSel() {
