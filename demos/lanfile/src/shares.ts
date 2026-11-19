@@ -17,7 +17,13 @@ const MAX_DEPTH = 8
 
 const entries: ShareEntry[] = []
 let nextId = 1
+let ver = 0
 let onChange: (() => void) | null = null
+
+/** 列表版本：条目增删时递增（手机端轮询据此判断要不要刷新） */
+export function version(): number {
+    return ver
+}
 
 /** UI 注册刷新回调（条目增删后调用） */
 export function onUpdate(fn: () => void): void {
@@ -41,7 +47,7 @@ export function addPath(abs: string): number {
     } else {
         if (push(p, p.slice(p.lastIndexOf('\\') + 1), st.size)) added = 1
     }
-    if (added > 0 && onChange) onChange()
+    if (added > 0 && onChange) { ver++; onChange() }
     return added
 }
 
@@ -65,6 +71,15 @@ function walkDir(dir: string, prefix: string, depth: number): number {
         if (entries.length >= MAX_FILES) break
     }
     return added
+}
+
+/** 清空共享条目表（不删磁盘文件）；本来为空则不回调 */
+export function clear(): void {
+    if (entries.length === 0) return
+    entries.length = 0
+    nextId = 1
+    ver++
+    if (onChange) onChange()
 }
 
 export function all(): readonly ShareEntry[] {
