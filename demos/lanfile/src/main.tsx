@@ -82,6 +82,7 @@ declare global {
 }
 import * as shares from './shares.js'
 import * as texts from './texts.js'
+import * as recv from './recv.js'
 import * as netif from './netif.js'
 import * as ctxmenu from './ctxmenu.js'
 import { makeQr, type QrImage } from './qrcode.js'
@@ -92,14 +93,15 @@ const COPYDATA_MAGIC = 0x1A6F1EC   // WM_COPYDATA dwData 自定义魔数（lanfi
 // ── 布局（基准像素；flex 样式由 reconciler 乘 scaleFactor，GDI 处自己乘 S）──
 const S = getScaleFactor()
 const WIN_W = Math.round(400 * S)
-const WIN_H = Math.round(384 * S)   // 设置页多了一行防火墙，底部「清除配置与日志」需要留出内边距
+const WIN_H = Math.round(416 * S)   // 设置页多了一行防火墙 + 一行提示音开关，底部「清除配置与日志」需要留出内边距
 const PAD = 12
 const GAP = 6
 const CTRL_H = 26
 const QR_W = 176      // 左侧 QR 面板宽
 const COPY_W = 52     // 复制 / 已复制
 const ADD_W = 66      // 添加文件
-const OPEN_DIR_W = 110  // 打开上传文件夹
+const OPEN_DIR_W = 118  // 打开传输文件夹
+const CLEAR_W = 52      // 清除列表
 const OPEN_FOLDER_W = 80 // 打开文件夹
 const FW_ALLOW_W = 76    // 一键放行 / 放行中…
 const FW_SET_W = 110     // 打开防火墙设置
@@ -133,7 +135,8 @@ function log(msg: string) {
 //                          顺序不跨重启稳定，VPN 接入/网卡增删会让下标指向另一张卡；
 //                          地址已不存在时回落内核路由主卡
 //   { "uploads": "D:\\..\\uploads" } 上传保存目录（缺省=exe 同级 uploads）
-type Cfg = { ctx?: number, addr?: string, uploads?: string }
+//   { "beep": 0|1 }        手机传来文件时播放提示音（缺省=关）
+type Cfg = { ctx?: number, addr?: string, uploads?: string, beep?: number }
 function cfgPath(): string | null {
     const dir = std.getenv('TEMP')
     return dir ? dir.replace(/[\\/]+$/, '') + '\\lanfile.json' : null
@@ -149,6 +152,7 @@ function loadCfg(): Cfg {
         if (typeof v?.ctx === 'number') out.ctx = v.ctx
         if (typeof v?.addr === 'string') out.addr = v.addr
         if (typeof v?.uploads === 'string') out.uploads = v.uploads
+        if (typeof v?.beep === 'number') out.beep = v.beep
         return out
     } catch { return {} }
 }
@@ -169,6 +173,8 @@ function saveCfg(c: Cfg): void {
 const MUTEX_NAME = 'Local\\lanfile-singleton'
 const GetLastError = bind('kernel32.dll', 'GetLastError', ' -> u32')
 const FlashWindow = bind('user32.dll', 'FlashWindow', '<HWND>ptr i32 -> i32')
+// 接收提示音（MB_ICONASTERISK 走 MbFlag 常量，不手写数值）
+const MessageBeep = bind('user32.dll', 'MessageBeep', 'u32 -> i32')
 
 // 文件拖拽（经典 WM_DROPFILES，Win95 起稳定）：目标窗 DragAcceptFiles 接受，
 // 拖入时收 WM_DROPFILES(wParam=HDROP)，DragQueryFileW 逐个取路径，DragFinish 释放
@@ -429,6 +435,10 @@ function addFiles(): void {
 function openUploadDir(): void {
     ShellExecute(hwndMain ?? NULL, 'open', uploadAbs, NULL, NULL, 1)
 }
+/** 清空文件列表：只清共享条目，不动上传目录里已收到的文件 */
+function clearShared(): void {
+    shares.clear()
+}
 // 打开所在文件夹并选中文件；文件不存在时 /select 会退到用户目录，改为直接打开父目录
 function openInFolder(p: string | null): void {
     if (!p) return
@@ -607,6 +617,11 @@ function TextPane() {
     useEffect(() => {
         texts.onUpdate(() => {
             const t = texts.get().text
+            // 外部写入（手机发来 / 清除）优先：取消尚未落盘的本地去抖，避免旧值回写覆盖
+            if (timer.current !== null) {
+                clearTimeout(timer.current)
+                timer.current = null
+            }
             textRef.current = t
             setText((prev) => (prev === t ? prev : t))
         })
@@ -639,6 +654,7 @@ function App({ addrs, initIdx, port, uploadDir, exe }: {
     const [idx, setIdx] = useState(initIdx)
     const [items, setItems] = useState<string[]>(shareItems)
     const [ctx, setCtx] = useState(ctxOn)
+    const [beep, setBeep] = useState(cfg.beep === 1)
     const [upDir, setUpDir] = useState(uploadDir)
     const [copied, setCopied] = useState(false)
     const [tab, setTab] = useState(0)          // 内层页签：0 文件 / 1 文字
@@ -687,6 +703,9 @@ function App({ addrs, initIdx, port, uploadDir, exe }: {
         const t = readClipboardText()
         if (t !== null) texts.set(t)
     }
+    const onClearText = (): void => {
+        texts.set('')
+    }
     // 防火墙：切到「设置」页时查一次；放行后轮询复查（netsh 在提权进程里异步生效）
     const refreshFw = (): void => {
         try { setFw(queryFirewall(exe)) } catch { setFw(null) }
@@ -708,6 +727,20 @@ function App({ addrs, initIdx, port, uploadDir, exe }: {
         setTimeout(poll, 500)
     }
     useEffect(() => { if (topTab === 1) refreshFw() }, [topTab])
+
+    // 手机传来文件时的桌面提示：默认关闭，开关状态直接读模块级 cfg（闭包始终拿最新值）
+    useEffect(() => {
+        let last = 0
+        recv.onUpload(() => {
+            if (cfg.beep !== 1) return
+            // 批量上传会逐个回调：1 秒内合并成一声，避免连环响
+            const now = Date.now()
+            if (now - last < 1000) return
+            last = now
+            MessageBeep(MbFlag.ICONASTERISK)
+        })
+        return () => recv.onUpload(null)
+    }, [])
 
     useEffect(() => {
         setItems(itemsOf())               // 对齐 render 前到达的 COPYDATA
@@ -749,7 +782,8 @@ function App({ addrs, initIdx, port, uploadDir, exe }: {
              ws={WindowStyle.VISIBLE | WindowStyle.CLIPCHILDREN}
              style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: GAP, height: CTRL_H }}>
             <Button onClick={addFiles} style={{ width: ADD_W, height: CTRL_H }}>添加文件</Button>
-            <Button onClick={openUploadDir} style={{ width: OPEN_DIR_W, height: CTRL_H }}>打开上传文件夹</Button>
+            <Button onClick={openUploadDir} style={{ width: OPEN_DIR_W, height: CTRL_H }}>打开传输文件夹</Button>
+            <Button onClick={clearShared} style={{ width: CLEAR_W, height: CTRL_H }}>清除</Button>
           </w>
         ) : (
           <w key="text" type="STATIC"
@@ -757,6 +791,7 @@ function App({ addrs, initIdx, port, uploadDir, exe }: {
              style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: GAP, height: CTRL_H }}>
             <Button onClick={onCopyText} style={{ width: COPY_W, height: CTRL_H }}>复制</Button>
             <Button onClick={onPasteText} style={{ width: COPY_W, height: CTRL_H }}>粘贴</Button>
+            <Button onClick={onClearText} style={{ width: CLEAR_W, height: CTRL_H }}>清除</Button>
           </w>
         )}
       </w>
@@ -772,6 +807,9 @@ function App({ addrs, initIdx, port, uploadDir, exe }: {
                     title='选择上传保存目录' style={{ height: CTRL_H }} />
         <CheckBox label='在资源管理器右键菜单中显示' checked={ctx}
                   onChange={(v) => { if (toggleCtx(v)) setCtx(v) }}
+                  style={{ height: CTRL_H }} />
+        <CheckBox label='手机传来文件时播放提示音' checked={beep}
+                  onChange={(v) => { setBeep(v); cfg.beep = v ? 1 : 0; saveCfg(cfg) }}
                   style={{ height: CTRL_H }} />
         <w type="STATIC" text={'防火墙：' + fwText(fw)} style={{ height: 18 }} />
         <w type="STATIC"

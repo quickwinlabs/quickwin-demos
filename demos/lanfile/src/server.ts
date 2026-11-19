@@ -13,6 +13,7 @@ import { createServer } from 'quickwin/lib/http-server.js'
 import type { ServerHandler } from 'quickwin/lib/http-server.js'
 import * as shares from './shares.js'
 import * as texts from './texts.js'
+import * as recv from './recv.js'
 import * as wfile from './wfile.js'
 
 const CHUNK = 65536
@@ -58,16 +59,23 @@ function sanitizeRel(raw: string): string {
 
 // ── 列表页 ──
 
-function listHtml(): Response {
+/** 「从电脑接收」卡片内容：首屏渲染与 /list 轮询共用 */
+function listFragment(): string {
     const items = shares.all()
     const lis = items.map((e) =>
         '<li><label><input type="checkbox" class="dl" data-id="' + e.id
         + '" data-rel="' + esc(e.rel) + '"></label>'
         + '<a href="/f/' + e.id + '">' + esc(e.rel) + '</a><span>' + fmtSize(e.size) + '</span></li>'
     ).join('')
-    const listBody = items.length > 0
-        ? '<ul>' + lis + '</ul>'
-        : '<p class="empty">电脑端还没有共享文件——但你现在就可以往下面传。</p>'
+    if (items.length === 0) {
+        return '<p class="empty">电脑端还没有共享文件——但你现在就可以往下面传。</p>'
+    }
+    return '<div class="dlbar"><label><input type="checkbox" id="selall">全选</label>'
+        + '<button id="dlsel" disabled>下载选中</button></div>'
+        + '<ul>' + lis + '</ul>'
+}
+
+function listHtml(): Response {
     // 当前文字直出首屏：无 JS / 轮询失败（如 IE 无 fetch）时也能看到内容
     const curText = texts.get().text
     const curTs = texts.get().ts
@@ -85,8 +93,10 @@ body{font-family:system-ui,-apple-system,sans-serif;margin:0 auto;max-width:640p
 h2{margin:8px 0 4px} .sub{color:#888;font-size:13px;margin:0 0 16px}
 .card{border:1px solid #ddd;border-radius:10px;padding:14px;margin-bottom:16px}
 .hint{font-size:13px;color:#666;margin:6px 0}
-input[type=file]{width:100%;margin:4px 0}
+input[type=file]{display:none}
 button{width:100%;padding:10px;border:0;border-radius:8px;background:#2563eb;color:#fff;font-size:15px;margin-top:8px}
+button.big{padding:14px;font-size:16px;font-weight:600}
+button.link{background:transparent;color:#2563eb;font-size:13px;padding:6px;margin-top:2px}
 button:disabled{background:#9db8e8}
 #status{font-size:13px;margin-top:8px;color:#444;white-space:pre-line}
 ul{list-style:none;padding:0;margin:0}
@@ -116,16 +126,17 @@ textarea{width:100%;box-sizing:border-box;margin:8px 0 0;padding:8px;border:1px 
 </div>
 <div class="card">
   <b>发送到电脑</b>
-  <p class="hint">选择文件（安卓可整文件夹；iPhone 支持多选照片）</p>
+  <p class="hint">选择一个或多个文件；安卓也可整文件夹</p>
   <input type="file" id="fpick" multiple>
   <input type="file" id="dpick" webkitdirectory multiple>
+  <button id="pick" class="big">选择文件（可多选）</button>
+  <button id="pickdir" class="link">或选择整个文件夹</button>
   <button id="send" disabled>开始上传</button>
   <div id="status"></div>
 </div>
 <div class="card">
   <b>从电脑接收</b>
-  ${items.length > 0 ? '<div class="dlbar"><label><input type="checkbox" id="selall">全选</label><button id="dlsel" disabled>下载选中</button></div>' : ''}
-  ${listBody}
+  <div id="files">${listFragment()}</div>
 </div>
 <script>
 var fp = document.getElementById('fpick')
@@ -139,6 +150,13 @@ function collect() {
   st.textContent = queue.length ? '已选 ' + queue.length + ' 个文件' : ''
 }
 fp.onchange = dp.onchange = collect
+// 两个隐藏 input 二选一：点「选择文件」先清掉上次选的文件夹，反之亦然（避免重复上传）
+var pick = document.getElementById('pick')
+var pickdir = document.getElementById('pickdir')
+pick.onclick = function () { dp.value = ''; collect(); fp.click() }
+pickdir.onclick = function () { fp.value = ''; collect(); dp.click() }
+// iOS Safari 不支持 webkitdirectory：文件夹入口没意义，直接隐藏
+if (!('webkitdirectory' in document.createElement('input'))) pickdir.style.display = 'none'
 btn.onclick = function () {
   btn.disabled = true
   var i = 0, fail = 0
@@ -159,15 +177,17 @@ btn.onclick = function () {
   next()
 }
 // 批量下载：勾选 → 逐个 <a download> 触发（浏览器询问"允许下载多个文件"）
-var boxes = [].slice.call(document.querySelectorAll('input.dl'))
-var selAll = document.getElementById('selall')
-var dlSel = document.getElementById('dlsel')
+var boxes = [], selAll = null, dlSel = null
 function refreshSel() {
   var on = boxes.filter(function (b) { return b.checked })
   dlSel.disabled = on.length === 0
   selAll.checked = boxes.length > 0 && on.length === boxes.length
 }
-if (boxes.length) {
+function bindList() {
+  boxes = [].slice.call(document.querySelectorAll('input.dl'))
+  selAll = document.getElementById('selall')
+  dlSel = document.getElementById('dlsel')
+  if (!boxes.length || !selAll || !dlSel) return
   boxes.forEach(function (b) { b.onchange = refreshSel })
   selAll.onchange = function () {
     boxes.forEach(function (b) { b.checked = selAll.checked })
@@ -185,6 +205,7 @@ if (boxes.length) {
   }
   refreshSel()
 }
+bindList()
 // 文字同步：桌面「文字」页签与这里共用最新一条（GET 轮询 / PUT 发送）
 var tcur = document.getElementById('tcur')
 var tcopy = document.getElementById('tcopy')
@@ -192,6 +213,13 @@ var tsend = document.getElementById('tsend')
 var tgo = document.getElementById('tgo')
 var tstatus = document.getElementById('tstatus')
 var tts = ${curTs}
+var tseq = 0
+// 短暂状态提示：1.5s 后自动消失（连续操作时只让最后一次的定时器生效）
+function flash(txt) {
+  var seq = ++tseq
+  tstatus.textContent = txt
+  setTimeout(function () { if (seq === tseq) tstatus.textContent = '' }, 1500)
+}
 function renderText(t) {
   if (t === '') {
     tcur.innerHTML = '<span class="empty">（暂无文字）</span>'
@@ -212,6 +240,24 @@ function pollText() {
     .then(function (j) { if (j) applyText(j) })
     .catch(function () { /* 网络抖动忽略 */ })
 }
+// 文件列表自动刷新：桌面端增删共享文件后，手机页不用手动刷新
+var lv = ${shares.version()}
+function pollList() {
+  if (document.hidden) return
+  fetch('v', { cache: 'no-store' })
+    .then(function (r) { return r.json() })
+    .then(function (j) {
+      if (j.v === lv) return
+      lv = j.v
+      return fetch('list', { cache: 'no-store' })
+        .then(function (r) { return r.text() })
+        .then(function (h) {
+          document.getElementById('files').innerHTML = h
+          bindList()
+        })
+    })
+    .catch(function () { /* 网络抖动忽略 */ })
+}
 tgo.onclick = function () {
   var v = tsend.value
   if (!v) { tstatus.textContent = '先输入文字'; return }
@@ -224,7 +270,7 @@ tgo.onclick = function () {
     })
     .then(function (j) {
       applyText(j)
-      tstatus.textContent = '已发送'
+      flash('已发送')
       tsend.value = ''
     })
     .catch(function (e) { tstatus.textContent = '发送失败：' + e.message })
@@ -235,7 +281,7 @@ tcopy.onclick = function () {
   if (!t) return
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(t)
-      .then(function () { tstatus.textContent = '已复制' })
+      .then(function () { flash('已复制') })
       .catch(function () { fallbackCopy(t) })
   } else {
     fallbackCopy(t)
@@ -251,12 +297,19 @@ function fallbackCopy(t) {
   var ok = false
   try { ok = document.execCommand('copy') } catch (e) { ok = false }
   document.body.removeChild(ta)
-  tstatus.textContent = ok ? '已复制' : '复制失败，请长按选择'
+  if (ok) flash('已复制')
+  else tstatus.textContent = '复制失败，请长按选择'
 }
 renderText(tcur.querySelector('.empty') ? '' : tcur.textContent)
 pollText()
+pollList()
 setInterval(pollText, 2000)
-document.addEventListener('visibilitychange', function () { if (!document.hidden) pollText() })
+setInterval(pollList, 3000)
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) return
+  pollText()
+  pollList()
+})
 </script>
 </body>
 </html>`
@@ -377,6 +430,7 @@ async function upload(name: string | null, req: Request): Promise<Response> {
         return new Response('upload failed', { status: 500 })
     }
     wfile.close(fd)
+    recv.notifyUpload(rel)   // 桌面侧据此按配置提示（默认关闭）
     return new Response('ok', { status: 201 })
 }
 
@@ -434,6 +488,23 @@ export function buildHandler(): ServerHandler {
             const path = u.pathname
             if (req.method === 'GET' || req.method === 'HEAD') {
                 if (path === '/' || path === '') return listHtml()
+                // 手机端轮询：版本号 + 列表片段（只换列表区，不整页刷新以免丢输入）
+                if (path === '/v') {
+                    return new Response(JSON.stringify({ v: shares.version() }), {
+                        headers: {
+                            'Content-Type': 'application/json; charset=utf-8',
+                            'Cache-Control': 'no-store',
+                        },
+                    })
+                }
+                if (path === '/list') {
+                    return new Response(listFragment(), {
+                        headers: {
+                            'Content-Type': 'text/html; charset=utf-8',
+                            'Cache-Control': 'no-store',
+                        },
+                    })
+                }
                 if (path === '/t') {
                     const since = u.searchParams.get('since')
                     if (since !== null && Number(since) === texts.get().ts) {
